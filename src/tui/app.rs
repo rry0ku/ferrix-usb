@@ -75,6 +75,7 @@ pub struct App {
     pub triage_author_input: String,
     pub triage_focus_field: usize,
     pub report_export_path: Option<String>,
+    pub last_device_refresh: std::time::Instant,
     pub should_quit: bool,
 }
 
@@ -104,6 +105,7 @@ impl Default for App {
             triage_author_input: "sec-admin".to_string(),
             triage_focus_field: 0,
             report_export_path: None,
+            last_device_refresh: std::time::Instant::now(),
             should_quit: false,
         };
         app.refresh_devices();
@@ -365,6 +367,14 @@ impl App {
     }
 
     pub fn poll_scan_events(&mut self) {
+        if self.screen == Screen::DeviceSelect
+            && !self.is_entering_manual_device
+            && self.last_device_refresh.elapsed() >= std::time::Duration::from_millis(1000)
+        {
+            self.refresh_devices();
+            self.last_device_refresh = std::time::Instant::now();
+        }
+
         if let Some(ref rx) = self.rx_event {
             while let Ok(event) = rx.try_recv() {
                 match event {
