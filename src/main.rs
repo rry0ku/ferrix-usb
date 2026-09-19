@@ -33,6 +33,7 @@ fn main() -> ExitCode {
                 eprintln!("{warn}");
             }
 
+            let device_stage = ferrix_usb::device::DeviceScanStage::new(policy.clone());
             let partition_stage = ferrix_usb::disk::PartitionScanStage::default();
             let fs_stage = ferrix_usb::fs::FilesystemScanStage::default();
             let file_stage = ferrix_usb::scan::FileScanStage::default();
@@ -42,6 +43,7 @@ fn main() -> ExitCode {
             let mut all_findings = Vec::new();
 
             for stage in [
+                &device_stage as &dyn Stage,
                 &partition_stage as &dyn Stage,
                 &fs_stage as &dyn Stage,
                 &file_stage as &dyn Stage,
@@ -66,6 +68,7 @@ fn main() -> ExitCode {
             }
 
             let required_stages = [
+                device_stage.id(),
                 partition_stage.id(),
                 fs_stage.id(),
                 file_stage.id(),
