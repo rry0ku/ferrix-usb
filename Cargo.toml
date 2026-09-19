@@ -5,6 +5,11 @@ edition = "2021"
 description = "Offline vetting and verification tool for removable media"
 readme = "README.md"
 license = "GPL-3.0-or-later"
+repository = "https://github.com/rry0ku/ferrix-usb"
+homepage = "https://github.com/rry0ku/ferrix-usb"
+documentation = "https://github.com/rry0ku/ferrix-usb"
+keywords = ["usb", "security", "offline", "airgap", "badusb"]
+categories = ["command-line-utilities", "security-tools"]
 
 [lib]
 name = "ferrix_usb"
