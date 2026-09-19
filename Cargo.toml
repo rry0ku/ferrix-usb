@@ -9,7 +9,7 @@ repository = "https://github.com/rry0ku/ferrix-usb"
 homepage = "https://github.com/rry0ku/ferrix-usb"
 documentation = "https://github.com/rry0ku/ferrix-usb"
 keywords = ["usb", "security", "offline", "airgap", "badusb"]
-categories = ["command-line-utilities", "security-tools"]
+categories = ["command-line-utilities", "cryptography"]
 
 [lib]
 name = "ferrix_usb"
