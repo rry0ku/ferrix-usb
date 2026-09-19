@@ -1,198 +1,191 @@
 # ferrix-usb
 
-**Check a USB drive before it crosses the air gap.**
+**Air-gap and offline security station for removable media.**
 
-ferrix-usb is an offline tool that inspects USB drives, SD cards, and external disks and tells you whether they are safe to plug into a sensitive computer. It looks at the drive itself, not just the files on it, and it never trusts what the drive says about itself.
+`ferrix-usb` is an offline security tool that inspects USB drives, SD cards, and external disks before they cross a security perimeter, and verifies that media is clean before leaving. It treats the **media itself as the attack surface**, analyzing hardware descriptors, partition tables, and raw filesystem structures without ever mounting hostile filesystems.
 
-> Not to be confused with the `ferrix` crate. Install this tool with `cargo install ferrix-usb`. The command you run is `ferrix`.
-
-> **Status: early development.** The project structure and the verdict logic exist. The scanning features listed below are planned and are being built in order. See [Status and roadmap](#10-status-and-roadmap) for what works today.
+> The crate is published as `ferrix-usb`. Install with `cargo install ferrix-usb`. The executable command is `ferrix`.
 
 ---
 
 ## Contents
 
-1. [What is this?](#1-what-is-this)
-2. [Why does it exist?](#2-why-does-it-exist)
-3. [What does it do?](#3-what-does-it-do)
-4. [What it checks](#4-what-it-checks)
-5. [How it works](#5-how-it-works)
-6. [Verdicts](#6-verdicts)
-7. [Why you can trust the tool](#7-why-you-can-trust-the-tool)
-8. [What it cannot stop](#8-what-it-cannot-stop)
-9. [Usage](#9-usage)
-10. [Status and roadmap](#10-status-and-roadmap)
-11. [Project layout](#11-project-layout)
-12. [Contributing and security](#12-contributing-and-security)
-13. [License](#13-license)
+1. [Overview](#1-overview)
+2. [Operating Model](#2-operating-model)
+3. [Key Capabilities](#3-key-capabilities)
+4. [Inspection Layers](#4-inspection-layers)
+5. [Hardening & Defense-in-Depth](#5-hardening--defense-in-depth)
+6. [Threat Model & Limits](#6-threat-model--limits)
+7. [Commands & CLI](#7-commands--cli)
+8. [Terminal User Interface (TUI)](#8-terminal-user-interface-tui)
+9. [Policy Configuration](#9-policy-configuration)
+10. [Two-Station Custody Workflow](#10-two-station-custody-workflow)
+11. [Project Layout](#11-project-layout)
+12. [License](#12-license)
 
 ---
 
-## 1. What is this?
+## 1. Overview
 
-Think of it as **airport security for USB drives**.
+Traditional security tools rely on antivirus software that scans files inside mounted filesystems. In an air-gapped or high-security facility, this leaves critical blind spots:
 
-Before a passenger boards a plane, they go through a checkpoint. ferrix-usb is that checkpoint for removable storage. You plug a drive into a separate, offline "checking station". The tool inspects it, gives a clear answer (safe, suspicious, or unsafe), and only then does anything from the drive move on.
+- **BadUSB attacks:** Devices that declare themselves as storage while simultaneously acting as HID keyboards or network adapters.
+- **Filesystem driver vulnerabilities:** Hostile, crafted filesystems that exploit the operating system kernel when mounted.
+- **Partition anomalies:** Data stashed in unallocated gaps, hidden partition types, or overlapping structures.
+- **Residual data leakage:** Remnants of sensitive files remaining in unallocated space or slack areas when media leaves.
 
-It works in two directions:
+`ferrix-usb` runs on a dedicated, offline **checking station**. It parses raw storage structures in userspace, enforces strict default-deny policies, isolates parsing inside Landlock and seccomp sandboxes, and issues cryptographically signed manifests.
 
-- **Ingress (coming in):** is this drive safe to bring into the secure side?
-- **Egress (going out):** is this drive clean of leftover data before it leaves?
+---
 
-## 2. Why does it exist?
+## 2. Operating Model
 
-Some networks are deliberately cut off from the internet. These are called **air-gapped** networks, and they are used in defence, critical infrastructure, and research. The idea is that if there is no connection, nothing can get in or out.
+`ferrix-usb` operates in two primary modes:
 
-The weak point is the USB drive. People carry files across the gap by hand, and a drive can carry more than files:
+- **Ingress (Incoming Media):** Vets media before it crosses into the secure network. Verifies USB descriptors, hashes every sector into an immutable snapshot, checks partition layouts, parses filesystem structures read-only, scans files for hostile patterns, and issues a signed manifest.
+- **Egress (Outgoing Media):** Inspects media before it leaves the secure facility. Scans unallocated sectors for deleted file remnants, computes Shannon entropy to verify forensic wipes, and detects leftover metadata (EXIF, PDF, Office author info).
 
-- A drive that pretends to be a keyboard and types attack commands the moment it is plugged in.
-- Hidden partitions holding malware or stolen data that the operating system does not show.
-- Files disguised as harmless documents, or shortcuts that run a hidden program.
-- Deleted secrets that are still recoverable from the drive.
+---
 
-Real attacks have used exactly these tricks to cross air gaps. Most existing tools are antivirus scanners that only look at files. ferrix-usb treats the **whole drive** as the thing to inspect.
+## 3. Key Capabilities
 
-## 3. What does it do?
+- **Zero Mounting:** Analyzes FAT12/16/32, exFAT, NTFS, and ext2/3/4 filesystems directly from raw block devices or images without mounting.
+- **Snapshot-First Scanning:** Reads the device sequentially once into an image, computes a whole-device BLAKE3 hash, and scans only the snapshot to eliminate Time-of-Check to Time-of-Use (TOCTOU) exploits.
+- **BadUSB Detection:** Queries USB device and interface descriptors to catch composite devices masquerading as mass storage while providing HID endpoints.
+- **Landlock & Seccomp Hardening:** Drops privileges immediately after opening block devices and enters a restricted sandbox with zero network access and limited syscall access.
+- **Cryptographic Custody:** Generates Ed25519-signed manifests and maintains a tamper-evident, hash-chained audit log.
+- **Interactive TUI & Scriptable CLI:** Ships with a full-featured keyboard-driven TUI alongside deterministic CLI subcommands.
 
-In plain steps:
+---
 
-1. **Detects** the drive and reads what kind of device it claims to be.
-2. **Makes a read-only copy (snapshot)** of the drive and fingerprints every sector.
-3. **Inspects the copy** in layers: device, partitions, filesystem, then files.
-4. **Gives a verdict:** `PASS`, `QUARANTINE`, or `FAIL`, with the reasons.
-5. **Signs a report** so the result cannot be quietly changed later.
-6. **Releases files** from the verified copy only if the verdict allows it.
+## 4. Inspection Layers
 
-Everything happens offline. The tool has no network code at all.
-
-## 4. What it checks
-
-| Layer | What it looks for | Example attack it stops |
-|---|---|---|
-| **Device** | A "storage" drive that also acts as a keyboard, unapproved vendors or serial numbers | BadUSB, Rubber Ducky style drives |
-| **Partitions** | Hidden partitions, data in unused gaps, overlapping or contradictory layouts | Malware stashed where the OS does not look |
-| **Filesystem** | Unexpected filesystems, inconsistent structures, alternate data streams | A drive claiming to be one thing but built as another |
-| **Files** | Autorun tricks, disguised executables, macros, scripts, dangerous archives, symlink escapes, hostile filenames | `invoice.pdf.exe`, zip bombs, path traversal |
-| **Tampering** | Any change to the drive after it was scanned | Swapping the drive in transit |
-| **Egress** | Leftover deleted data, metadata in files, failed wipes | Leaking secrets on a "clean" drive |
-
-**It tries not to cry wolf.** A plain document, a normal PDF, or a filename in Hindi or Punjabi is not flagged. Findings must come with evidence, and noisy rules get fixed instead of ignored.
-
-## 5. How it works
-
-```
-   Drive plugged in
-         |
-         v
-  [ Device check ]      Is it really just storage?
-         |
-         v
-  [ Snapshot + hash ]   Read once, make a read-only copy,
-         |              fingerprint every sector
-         v
-  [ Partition scan ]    Hidden or contradictory layouts?
-         |
-         v
-  [ Filesystem scan ]   Parsed directly, never mounted
-         |
-         v
-  [ File scan ]         Risky files, archives, names
-         |
-         v
-  [ Policy + verdict ]  PASS / QUARANTINE / FAIL
-         |
-         v
-  [ Signed manifest ]   Tamper-evident record
-         |
-         v
-  Files released from the verified copy (only on PASS)
-```
-
-**Two-station option.** Station A scans the drive and produces a signed manifest. The secure-side computer runs `ferrix verify` on the same drive against that manifest. If even one byte differs, verification fails.
-
-## 6. Verdicts
-
-| Verdict | Meaning | Exit code | What happens |
+| Layer | Checks Performed | Finding ID Prefix | Target Threats |
 |---|---|---|---|
-| `PASS` | Every required check completed and nothing serious was found | `0` | Files can be released |
-| `QUARANTINE` | Something serious or uncertain was found, or a check could not finish | `10` | Nothing is released, a human reviews it |
-| `FAIL` | A critical problem was found | `20` | Nothing is released |
-| Error | The tool itself hit a problem | `1` | Treated as not safe |
+| **Device Layer** | Descriptors, composite interfaces (Mass Storage + HID), vendor/product allowlist | `FX-DEV-` | BadUSB, Rubber Ducky, unauthorized hardware |
+| **Partition Layer** | MBR/GPT parsing, protective MBR mismatch, overlapping partitions, unallocated gaps | `FX-PART-` | Partition table attacks, hidden partitions, steganography |
+| **Filesystem Layer** | FAT/exFAT/NTFS/ext boot records, polyglot filesystems, cluster allocation, duplicate entries | `FX-FS-` | Polyglot disks, filesystem driver exploits, structure tampering |
+| **File Layer** | Magic byte vs extension mismatch, autorun triggers, RTLO bidi overrides, zip bombs/traversal, Office macros, PDF JavaScript | `FX-FILE-` | Disguised executables, macro malware, archive traversal, autorun exploits |
+| **Egress Layer** | Deleted remnants in unallocated space, wipe pattern verification via Shannon entropy, document metadata | `FX-EGR-` | Data leakage, improper media wipes, sensitive author metadata |
 
-The rule underneath: **when in doubt, it does not pass.** A crash, a skipped check, or a file the tool cannot understand can never produce a `PASS`.
+---
 
-## 7. Why you can trust the tool
+## 5. Hardening & Defense-in-Depth
 
-A security tool that parses hostile data must itself be hard to attack. These are hard rules for the project:
+`ferrix-usb` is engineered to parse hostile, adversarial data safely:
 
-- **Never mounts the drive to inspect it.** Filesystem drivers are attack surface, so ferrix-usb reads the raw data and parses it itself.
-- **Scans a snapshot, not the live drive.** A drive cannot show clean data during the scan and different data at copy time.
-- **Zero network.** No telemetry, no update checks, no network libraries. Enforced in CI.
-- **Read-only by default.** It does not write to the drive under inspection.
-- **Fails closed.** Unknown or unreadable means "not safe".
-- **Sandboxed and least privilege.** It opens the device, then drops privileges before parsing.
-- **Written in Rust**, with no `unwrap` on data from the drive and fuzz testing for every parser.
-- **Supply chain checks.** Pinned toolchain, vendored dependencies, `cargo-deny`, and signed releases.
-- **No silent bypass.** A test suite of evasion attempts must always be caught.
+1. **Zero Network:** Built without any networking crates or sockets. Enforced by compiler and CI bans.
+2. **Fail Closed:** Any parse failure, stage timeout, or unrecognized structure results in `QUARANTINE` or `FAIL`, never `PASS`.
+3. **Strict Bounds Checking:** Pure safe Rust without `unwrap()` or `expect()` on untrusted media data.
+4. **Least Privilege:** Drops `root` privileges to `nobody` or the calling user immediately after opening device handles.
+5. **Seccomp BPF Filtering:** Syscall filter returns `EPERM` on any attempted socket, process execution, or unauthorized syscall.
+6. **Landlock Filesystem Sandbox:** Restricts filesystem operations to approved paths only.
+7. **Terminal Sanitization:** Strips ANSI escape sequences and escapes Unicode bidirectional overrides (RTLO) before rendering untrusted media filenames in the TUI or terminal.
 
-Learning from mistakes is controlled. False alarms are handled by an operator-approved, signed, expiring exception on one exact file. The tool never teaches itself from the drives it scans, because an attacker could use that to train it to trust malware.
+---
 
-## 8. What it cannot stop
+## 6. Threat Model & Limits
 
-Being honest about limits is part of the design.
+`ferrix-usb` is a specialized offline media vetting station, not an antivirus scanner or firmware auditor.
 
-- **Attacks on the computer's USB driver itself.** A malicious device can attack the host before any software runs. Use a sacrificial, offline checking station that you can reboot or reimage, and consider a hardware barrier.
-- **Malicious drive firmware.** A compromised drive controller can lie to software. Ferrix reduces the risk but cannot see inside the chip.
-- **Brand new malware with no known pattern.** It is not an antivirus engine.
-- **Bugs in the programs you later open files with.**
-- **Insiders who copy real secrets on purpose.** It checks media, not intent.
-- **Physical attacks**, such as a USB killer device or an implanted cable.
-- **Attacks that do not involve removable media**, such as phishing or network intrusion.
+### What it stops:
+- Malicious partition tables, overlapping partitions, and hidden sectors.
+- Polyglot disk images and hostile filesystem structures.
+- BadUSB devices that combine mass storage with HID interfaces.
+- Executables disguised as documents, double extensions, and RTLO character tricks.
+- Archive directory traversal and zip bombs.
+- Leftover sensitive file remnants and incomplete wipes.
 
-The full write-up is in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
+### Explicit limits:
+- **Host USB Controller Attacks:** Malicious USB devices that exploit kernel-level USB host controllers during hardware enumeration cannot be stopped by userspace software. Use a dedicated, sacrificial offline checking station.
+- **Drive Firmware Implants:** Compromised drive microcontrollers (e.g. modified flash controllers) can deceive software.
+- **Zero-Day Payloads:** Content heuristics flag risky formats (macros, scripts, JavaScript in PDFs), but `ferrix-usb` is not a signature-based antivirus engine.
 
-## 9. Usage
+Full documentation is available in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
-> The commands below are the planned interface. Most are not implemented yet.
+---
 
-```
-ferrix                          Launch the terminal interface (TUI)
-ferrix scan <device|image>      Check a drive coming in
-ferrix egress <device|image>    Check a drive going out
-ferrix verify <device> --manifest <file>
-                                Verify a drive against a signed manifest
-ferrix keygen                   Create this station's signing key
-ferrix report <scan-id>         Export a JSON or HTML report
-ferrix triage                   Review findings and manage exceptions
-ferrix watch                    Watch for new drives (later)
-```
+## 7. Commands & CLI
 
-Useful flags: `--policy <file>`, `--json`, `--out <dir>`, `--no-tui`.
+### Installation
 
-**Install (once published):**
-
-```
+```bash
 cargo install ferrix-usb
 ```
 
-**Build from source:**
+### Build from Source
 
-```
-git clone https://github.com/corvainx/ferrix-usb
+```bash
+git clone https://github.com/rry0ku/ferrix-usb
 cd ferrix-usb
 cargo build --release
 ```
 
-**Terminal interface.** Running `ferrix` with no arguments opens a keyboard-driven TUI with five screens: pick a device, pick a mode, watch the scan, read the results, export the report. It works over SSH and on a plain terminal. There is no graphical (GUI) version.
+### Command Reference
 
-**Policy file.** A signed YAML file decides what is allowed. Anything not listed is blocked.
+```bash
+# Launch interactive TUI
+ferrix
+
+# Ingress scan: inspect media or raw image before crossing into secure network
+ferrix scan /dev/sdb
+ferrix scan /path/to/disk.raw --out ./reports --json
+
+# Egress scan: verify wipe patterns and check for leftover remnants
+ferrix egress /dev/sdb --verify-wipe
+
+# Two-station custody verification against a signed manifest
+ferrix verify /dev/sdb --manifest ./reports/scan-manifest.json
+
+# Generate station Ed25519 signing keypair
+ferrix keygen --key-dir /etc/ferrix
+
+# Export JSON or HTML report from a previous scan ID
+ferrix report scan-1700000000-abcd --html --out ./reports
+
+# List active false-positive suppressions
+ferrix triage --list
+```
+
+### Exit Codes
+
+- `0` - `PASS` (Clean, meets policy)
+- `10` - `QUARANTINE` (Suspicious, unparseable, or requires operator review)
+- `20` - `FAIL` (Critical finding or hostile pattern detected)
+- `1` - Internal error or invalid arguments
+
+---
+
+## 8. Terminal User Interface (TUI)
+
+Running `ferrix` without arguments in an interactive terminal launches the Ratatui TUI:
+
+1. **Device Selection:** Discovers removable block devices from sysfs and local disk images. Supports manual path entry.
+2. **Mode Selection:** Select Ingress or Egress mode and view active policy limits.
+3. **Live Monitor:** Asynchronous scanning worker thread streams stage-by-stage progress without blocking the interface.
+4. **Results Screen:** Displays the verdict banner (`PASS`, `QUARANTINE`, `FAIL`), severity-badged findings, and detailed evidence panes.
+5. **False Positive Triage:** Allows operators to review findings and create scoped, signed 90-day suppressions for approved internal files.
+6. **Report Export:** Exports standalone JSON or HTML5 reports directly from the interface.
+
+---
+
+## 9. Policy Configuration
+
+Security policies are defined in YAML. `ferrix-usb` includes a built-in strict default policy, or can load a station policy via `--policy <file>`:
 
 ```yaml
-name: default-ingress
-allowed_filesystems: [exfat, fat32]
+name: strict-ingress
+allowed_filesystems:
+  - fat32
+  - exfat
 max_partitions: 1
 max_file_size_mb: 512
-allowed_types: [pdf, txt, png, jpg, docx]   # matched by content, not extension
+allowed_types:
+  - pdf
+  - txt
+  - png
+  - jpg
+  - docx
 archives:
   max_depth: 3
   max_expansion_ratio: 100
@@ -200,67 +193,51 @@ on_high: quarantine
 on_critical: fail
 ```
 
-## 10. Status and roadmap
+Policies are default-deny: any filesystem or file type not explicitly listed is blocked. Unknown configuration keys cause the policy parser to fail closed.
 
-**Done**
-- [x] Project scaffold: crate, modules, CLI stubs, CI
-- [x] Core types and verdict logic with tests (an error or skipped check can never pass)
-- [x] Supply chain ban list for network crates
+---
 
-**Next (MVP)**
-- [ ] Snapshot and full-device hash
-- [ ] Partition parsing and anomaly checks
-- [ ] FAT and exFAT reading, core file checks
-- [ ] Default-deny signed policy
-- [ ] JSON report
-- [ ] Sample images: malicious set and a clean set that must never be flagged
+## 10. Two-Station Custody Workflow
 
-**After that**
-- [ ] Signed manifests and tamper-evident audit log
-- [ ] Egress checks (leftovers, metadata, wipe verification)
-- [ ] Sandboxing and privilege drop
-- [ ] Terminal interface
-- [ ] Parser differential defence, manifest replay protection, safe file release
-- [ ] Triage and scoped exceptions
-- [ ] Hotplug watch mode, USB authorization control
-- [ ] Fuzzing, docs, release binaries, write-up
+To prevent media tampering or drive swapping between the checking station and the secure network:
 
-Development starts with disk image files, not real drives. It is faster, safer, and easy to test.
+1. **Checking Station A:**
+   ```bash
+   ferrix scan /dev/sdb --out /staging/manifests
+   ```
+   Computes the full-device BLAKE3 hash, file hashes, and signs the manifest with the station's private key (`station.key`).
 
-## 11. Project layout
+2. **Secure Workstation B:**
+   ```bash
+   ferrix verify /dev/sdb --manifest /staging/manifests/scan-manifest.json
+   ```
+   Verifies the station signature with `station.pub` and re-hashes `/dev/sdb`. If even a single byte differs, verification fails and the media is rejected.
+
+---
+
+## 11. Project Layout
 
 ```
 src/
-  device/      USB descriptors, BadUSB pattern detection
-  disk/        raw reading, partition parsing
-  fs/          read-only filesystem parsing
-  scan/        file layer checks
-  egress/      leftover data, wipe verification, metadata
-  policy/      policy loading and evaluation
-  triage/      false-positive review and exceptions
-  manifest/    signed manifests and verification
-  audit/       tamper-evident audit log
-  report/      JSON and HTML reports
-  sandbox/     sandbox setup and privilege drop
-  tui/         terminal interface (display only, no security logic)
-  cli.rs       command-line interface
-tests/
-  samples/     scripted malicious disk images
-  samples/clean/  safe images that must never be flagged
-  bypass/      evasion attempts that must always be caught
-fuzz/          fuzz targets for every parser
-docs/          threat model and design notes
-AGENTS.md      rules for AI coding agents working on this repo
+  device/      USB descriptor parsing, sysfs authorization, BadUSB detection
+  disk/        raw block access, MBR/GPT parsing, partition anomalies, snapshotting
+  fs/          read-only FAT/exFAT/NTFS/ext parsers (zero mounting)
+  scan/        content detection, magic vs extension, autorun, archives, macros
+  egress/      remnants in unallocated space, Shannon entropy wipe check, metadata
+  policy/      YAML policy parser, default-deny evaluation, signature verification
+  triage/      scoped false-positive suppressions and audit logging
+  manifest/    Ed25519 signing keypair generation and verification
+  audit/       hash-chained, tamper-evident JSONL audit log
+  report/      machine-readable JSON and standalone HTML5 reports
+  sandbox/     Landlock filesystem sandbox, seccomp BPF filters, privilege drop
+  tui/         Ratatui terminal UI, async scan worker, sanitized string rendering
+  cli.rs       Clap CLI definitions
+  main.rs      CLI dispatcher and main entry point
+tests/         Integration test suites for all layers (80 tests)
 ```
 
-## 12. Contributing and security
+---
 
-- Read [`AGENTS.md`](AGENTS.md). It is the project's rulebook and applies to human contributors too.
-- Every new check needs a malicious sample that triggers it and a clean sample that must not.
-- Run before opening a pull request: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
-- No new dependency without a stated reason. Anything with network code is rejected.
-- **Found a vulnerability in ferrix-usb?** Please report it privately through GitHub Security Advisories on this repository instead of opening a public issue.
+## 12. License
 
-## 13. License
-
-GPL-3.0-or-later. You are free to use, study, and modify this tool. If you distribute a modified version, you must share your changes under the same license.
+This project is licensed under the **GNU General Public License v3.0 or later (GPL-3.0-or-later)**. See the [LICENSE](LICENSE) file for details.
