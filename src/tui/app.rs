@@ -296,11 +296,24 @@ impl App {
                                     findings: found,
                                 }
                             }
-                            Err(e) => StageResult {
-                                stage_id: stage.id().to_string(),
-                                status: StageStatus::Error(e.to_string()),
-                                findings: Vec::new(),
-                            },
+                            Err(e) => {
+                                let err_finding = Finding {
+                                    id: format!("FX-ERR-{}", stage.id().to_uppercase()),
+                                    severity: Severity::High,
+                                    confidence: crate::core::Confidence::High,
+                                    stage: stage.id().to_string(),
+                                    location: crate::core::Location::Device,
+                                    reason: format!("Stage '{}' failed execution", stage.name()),
+                                    evidence: e.to_string(),
+                                };
+                                let _ = tx.send(ScanEvent::FindingFound(err_finding.clone()));
+                                findings.push(err_finding.clone());
+                                StageResult {
+                                    stage_id: stage.id().to_string(),
+                                    status: StageStatus::Error(e.to_string()),
+                                    findings: vec![err_finding],
+                                }
+                            }
                         };
 
                         let _ = tx.send(ScanEvent::StageFinished(stage_result.clone()));
@@ -331,34 +344,48 @@ impl App {
                         total: 1,
                     });
 
+                    let mut findings = Vec::new();
                     let stage_result = match egress_stage.run(&ctx) {
                         Ok(found) => {
                             for f in &found {
                                 let _ = tx.send(ScanEvent::FindingFound(f.clone()));
                             }
+                            findings.extend(found.clone());
                             StageResult {
                                 stage_id: egress_stage.id().to_string(),
                                 status: StageStatus::Ok,
                                 findings: found,
                             }
                         }
-                        Err(e) => StageResult {
-                            stage_id: egress_stage.id().to_string(),
-                            status: StageStatus::Error(e.to_string()),
-                            findings: Vec::new(),
-                        },
+                        Err(e) => {
+                            let err_finding = Finding {
+                                id: format!("FX-ERR-{}", egress_stage.id().to_uppercase()),
+                                severity: Severity::High,
+                                confidence: crate::core::Confidence::High,
+                                stage: egress_stage.id().to_string(),
+                                location: crate::core::Location::Device,
+                                reason: format!("Stage '{}' failed execution", egress_stage.name()),
+                                evidence: e.to_string(),
+                            };
+                            let _ = tx.send(ScanEvent::FindingFound(err_finding.clone()));
+                            findings.push(err_finding.clone());
+                            StageResult {
+                                stage_id: egress_stage.id().to_string(),
+                                status: StageStatus::Error(e.to_string()),
+                                findings: vec![err_finding],
+                            }
+                        }
                     };
 
                     let _ = tx.send(ScanEvent::StageFinished(stage_result.clone()));
                     let required = [egress_stage.id()];
                     let completed = vec![stage_result.clone()];
-                    let verdict =
-                        crate::core::resolve_verdict(&required, &completed, &stage_result.findings);
+                    let verdict = crate::core::resolve_verdict(&required, &completed, &findings);
 
                     let _ = tx.send(ScanEvent::ScanFinished {
                         verdict,
                         stages: completed,
-                        findings: stage_result.findings,
+                        findings,
                         scan_id,
                     });
                 }

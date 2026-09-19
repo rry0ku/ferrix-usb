@@ -42,7 +42,6 @@ fn draw_header(f: &mut Frame, area: Rect) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("v0.1.0  ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "•  Offline Removable Media Security Station",
             Style::default().fg(Color::White),
