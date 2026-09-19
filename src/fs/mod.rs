@@ -1,0 +1,385 @@
+pub mod anomalies;
+pub mod exfat;
+pub mod ext;
+pub mod fat;
+pub mod ntfs;
+
+pub use anomalies::*;
+pub use exfat::*;
+pub use ext::*;
+pub use fat::*;
+pub use ntfs::*;
+
+use crate::core::{Finding, MediaPath, ScanContext, Stage, StageError};
+use crate::disk::partition::parse_disk_layout;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredFile {
+    pub path: MediaPath,
+    pub size: u64,
+    pub is_dir: bool,
+    pub attributes: u8,
+    pub partition_index: u32,
+    pub data_offset: Option<u64>,
+}
+
+pub struct FilesystemScanStage {
+    pub sector_size: u32,
+}
+
+impl Default for FilesystemScanStage {
+    fn default() -> Self {
+        Self { sector_size: 512 }
+    }
+}
+
+impl FilesystemScanStage {
+    pub fn new(sector_size: u32) -> Self {
+        Self { sector_size }
+    }
+}
+
+impl Stage for FilesystemScanStage {
+    fn id(&self) -> &'static str {
+        "filesystem_scan"
+    }
+
+    fn name(&self) -> &'static str {
+        "Filesystem Structure & Integrity Inspection"
+    }
+
+    fn run(&self, ctx: &ScanContext) -> Result<Vec<Finding>, StageError> {
+        let scan_path = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
+        let mut file = File::open(scan_path).map_err(|e| {
+            StageError::Io(format!(
+                "failed to open scan target {}: {e}",
+                scan_path.display()
+            ))
+        })?;
+
+        let mut total_bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if total_bytes == 0 {
+            if let Ok(end_pos) = file.seek(SeekFrom::End(0)) {
+                total_bytes = end_pos;
+                let _ = file.seek(SeekFrom::Start(0));
+            }
+        }
+
+        let layout = parse_disk_layout(&mut file, total_bytes, self.sector_size)?;
+        let mut findings = Vec::new();
+
+        let partition_targets: Vec<(u32, u64, u64)> = if layout.partitions.is_empty() {
+            vec![(0, 0, total_bytes / self.sector_size as u64)]
+        } else {
+            layout
+                .partitions
+                .iter()
+                .map(|p| (p.index, p.start_lba, p.total_sectors))
+                .collect()
+        };
+
+        for (part_index, start_lba, total_sectors) in partition_targets {
+            let part_offset = start_lba.saturating_mul(self.sector_size as u64);
+
+            if file.seek(SeekFrom::Start(part_offset)).is_err() {
+                continue;
+            }
+
+            let mut sector0 = vec![0u8; 512];
+            if file.read_exact(&mut sector0).is_err() {
+                continue;
+            }
+
+            let mut detected_fs = Vec::new();
+
+            let fat_res = parse_fat_boot_sector(&sector0);
+            let exfat_res = parse_exfat_boot_sector(&sector0);
+            let ntfs_res = parse_ntfs_boot_sector(&sector0);
+
+            let ext_res = {
+                let ext_offset = part_offset.saturating_add(1024);
+                if file.seek(SeekFrom::Start(ext_offset)).is_ok() {
+                    let mut ext_buf = vec![0u8; 1024];
+                    if file.read_exact(&mut ext_buf).is_ok() {
+                        parse_ext_superblock(&ext_buf).ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if fat_res.is_ok() {
+                detected_fs.push("FAT");
+            }
+            if exfat_res.is_ok() {
+                detected_fs.push("exFAT");
+            }
+            if ntfs_res.is_ok() {
+                detected_fs.push("NTFS");
+            }
+            if ext_res.is_some() {
+                detected_fs.push("ext4");
+            }
+
+            check_polyglot_signatures(part_index, &detected_fs, &mut findings);
+
+            if let Ok(fat) = fat_res {
+                check_fs_size_mismatch(
+                    part_index,
+                    "FAT",
+                    fat.total_sectors,
+                    total_sectors,
+                    &mut findings,
+                );
+
+                if fat.sectors_per_cluster == 0
+                    || (fat.sectors_per_cluster & (fat.sectors_per_cluster - 1)) != 0
+                {
+                    check_boot_sector_inconsistency(
+                        part_index,
+                        "FAT",
+                        &format!("invalid sectors_per_cluster: {}", fat.sectors_per_cluster),
+                        &mut findings,
+                    );
+                }
+
+                if fat.reserved_sectors == 0 {
+                    check_boot_sector_inconsistency(
+                        part_index,
+                        "FAT",
+                        "reserved sectors cannot be zero",
+                        &mut findings,
+                    );
+                }
+
+                if let Ok(backup_matches) =
+                    check_fat_backup_boot_sector(&mut file, part_offset, &fat)
+                {
+                    if !backup_matches {
+                        check_backup_boot_sector_mismatch(part_index, "FAT", &mut findings);
+                    }
+                }
+
+                let dir_data = match fat.fat_type {
+                    FatType::Fat32 => {
+                        let root_cluster = fat.root_cluster;
+                        if root_cluster >= 2 {
+                            let first_data_sector = fat.reserved_sectors as u64
+                                + (fat.num_fats as u64 * fat.sectors_per_fat as u64);
+                            let cluster_offset = part_offset.saturating_add(
+                                (first_data_sector
+                                    + (root_cluster as u64 - 2) * fat.sectors_per_cluster as u64)
+                                    * fat.bytes_per_sector as u64,
+                            );
+                            let cluster_bytes =
+                                fat.sectors_per_cluster as usize * fat.bytes_per_sector as usize;
+                            if file.seek(SeekFrom::Start(cluster_offset)).is_ok() {
+                                let mut buf = vec![0u8; cluster_bytes];
+                                if file.read_exact(&mut buf).is_ok() {
+                                    Some(buf)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    FatType::Fat12 | FatType::Fat16 => {
+                        let root_dir_offset = part_offset.saturating_add(
+                            (fat.reserved_sectors as u64
+                                + (fat.num_fats as u64 * fat.sectors_per_fat as u64))
+                                * fat.bytes_per_sector as u64,
+                        );
+                        let root_dir_bytes = fat.root_entries as usize * 32;
+                        if root_dir_bytes > 0 && file.seek(SeekFrom::Start(root_dir_offset)).is_ok()
+                        {
+                            let mut buf = vec![0u8; root_dir_bytes];
+                            if file.read_exact(&mut buf).is_ok() {
+                                Some(buf)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                };
+
+                if let Some(data) = dir_data {
+                    if let Ok((_entries, duplicates)) = parse_fat_directory(&data) {
+                        check_duplicate_entries(part_index, &duplicates, &mut findings);
+                    }
+                }
+            }
+
+            if let Ok(exfat) = exfat_res {
+                check_fs_size_mismatch(
+                    part_index,
+                    "exFAT",
+                    exfat.volume_length_sectors,
+                    total_sectors,
+                    &mut findings,
+                );
+
+                if let Ok(backup_matches) =
+                    check_exfat_backup_boot_sector(&mut file, part_offset, &exfat)
+                {
+                    if !backup_matches {
+                        check_backup_boot_sector_mismatch(part_index, "exFAT", &mut findings);
+                    }
+                }
+            }
+
+            if let Ok(ntfs) = ntfs_res {
+                check_fs_size_mismatch(
+                    part_index,
+                    "NTFS",
+                    ntfs.total_sectors,
+                    total_sectors,
+                    &mut findings,
+                );
+
+                if let Ok(backup_matches) =
+                    check_ntfs_backup_boot_sector(&mut file, part_offset, total_sectors, &ntfs)
+                {
+                    if !backup_matches {
+                        check_backup_boot_sector_mismatch(part_index, "NTFS", &mut findings);
+                    }
+                }
+            }
+
+            if let Some(ext) = ext_res {
+                let ext_sectors = ext.total_bytes / self.sector_size as u64;
+                check_fs_size_mismatch(
+                    part_index,
+                    "ext4",
+                    ext_sectors,
+                    total_sectors,
+                    &mut findings,
+                );
+            }
+        }
+
+        Ok(findings)
+    }
+}
+
+pub fn extract_filesystem_files<R: Read + Seek>(
+    file: &mut R,
+    total_bytes: u64,
+    sector_size: u32,
+) -> Result<Vec<DiscoveredFile>, StageError> {
+    let layout = parse_disk_layout(file, total_bytes, sector_size)?;
+    let mut discovered = Vec::new();
+
+    let partition_targets: Vec<(u32, u64, u64)> = if layout.partitions.is_empty() {
+        vec![(0, 0, total_bytes / sector_size as u64)]
+    } else {
+        layout
+            .partitions
+            .iter()
+            .map(|p| (p.index, p.start_lba, p.total_sectors))
+            .collect()
+    };
+
+    for (part_index, start_lba, _total_sectors) in partition_targets {
+        let part_offset = start_lba.saturating_mul(sector_size as u64);
+        if file.seek(SeekFrom::Start(part_offset)).is_err() {
+            continue;
+        }
+
+        let mut sector0 = vec![0u8; 512];
+        if file.read_exact(&mut sector0).is_err() {
+            continue;
+        }
+
+        if let Ok(fat) = parse_fat_boot_sector(&sector0) {
+            let (dir_data, first_data_sector) = match fat.fat_type {
+                FatType::Fat32 => {
+                    let root_cluster = fat.root_cluster;
+                    if root_cluster >= 2 {
+                        let fds = fat.reserved_sectors as u64
+                            + (fat.num_fats as u64 * fat.sectors_per_fat as u64);
+                        let cluster_offset = part_offset.saturating_add(
+                            (fds + (root_cluster as u64 - 2) * fat.sectors_per_cluster as u64)
+                                * fat.bytes_per_sector as u64,
+                        );
+                        let cluster_bytes =
+                            fat.sectors_per_cluster as usize * fat.bytes_per_sector as usize;
+                        if file.seek(SeekFrom::Start(cluster_offset)).is_ok() {
+                            let mut buf = vec![0u8; cluster_bytes];
+                            if file.read_exact(&mut buf).is_ok() {
+                                (Some(buf), fds)
+                            } else {
+                                (None, fds)
+                            }
+                        } else {
+                            (None, fds)
+                        }
+                    } else {
+                        (None, 0)
+                    }
+                }
+                FatType::Fat12 | FatType::Fat16 => {
+                    let root_dir_sectors = ((fat.root_entries as u32 * 32)
+                        .saturating_add(fat.bytes_per_sector as u32)
+                        .saturating_sub(1))
+                        / fat.bytes_per_sector as u32;
+                    let fds = fat.reserved_sectors as u64
+                        + (fat.num_fats as u64 * fat.sectors_per_fat as u64)
+                        + root_dir_sectors as u64;
+                    let root_dir_offset = part_offset.saturating_add(
+                        (fat.reserved_sectors as u64
+                            + (fat.num_fats as u64 * fat.sectors_per_fat as u64))
+                            * fat.bytes_per_sector as u64,
+                    );
+                    let root_dir_bytes = fat.root_entries as usize * 32;
+                    if root_dir_bytes > 0 && file.seek(SeekFrom::Start(root_dir_offset)).is_ok() {
+                        let mut buf = vec![0u8; root_dir_bytes];
+                        if file.read_exact(&mut buf).is_ok() {
+                            (Some(buf), fds)
+                        } else {
+                            (None, fds)
+                        }
+                    } else {
+                        (None, fds)
+                    }
+                }
+            };
+
+            if let Some(data) = dir_data {
+                if let Ok((entries, _)) = parse_fat_directory(&data) {
+                    for entry in entries {
+                        let data_offset = if entry.cluster >= 2 {
+                            Some(part_offset.saturating_add(
+                                (first_data_sector
+                                    + (entry.cluster as u64 - 2) * fat.sectors_per_cluster as u64)
+                                    * fat.bytes_per_sector as u64,
+                            ))
+                        } else {
+                            None
+                        };
+
+                        discovered.push(DiscoveredFile {
+                            path: MediaPath::from(entry.name.as_bytes()),
+                            size: entry.size,
+                            is_dir: entry.is_dir,
+                            attributes: entry.attributes,
+                            partition_index: part_index,
+                            data_offset,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(discovered)
+}

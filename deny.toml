@@ -1,0 +1,48 @@
+[advisories]
+unmaintained = "all"
+yanked = "warn"
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "GPL-3.0-or-later",
+]
+
+[bans]
+multiple-versions = "warn"
+deny = [
+    { name = "reqwest" },
+    { name = "hyper" },
+    { name = "hyper-util" },
+    { name = "hyper-rustls" },
+    { name = "hyper-tls" },
+    { name = "tokio-tungstenite" },
+    { name = "tungstenite" },
+    { name = "async-tungstenite" },
+    { name = "ureq" },
+    { name = "curl" },
+    { name = "curl-sys" },
+    { name = "surf" },
+    { name = "attohttpc" },
+    { name = "isahc" },
+    { name = "native-tls" },
+    { name = "rustls" },
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "socket2" },
+    { name = "h2" },
+    { name = "httparse" },
+    { name = "http" },
+    { name = "http-body" },
+    { name = "tcp-stream" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
