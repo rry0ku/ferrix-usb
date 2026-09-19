@@ -222,12 +222,17 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
             }
         }
     } else {
+        if !data.starts_with(b"PK\x03\x04") {
+            return;
+        }
         let mut idx = 0;
-        while idx + 30 <= data.len() {
+        let mut scanned_entries = 0usize;
+        while idx + 30 <= data.len() && scanned_entries < 512 {
             let magic =
                 u32::from_le_bytes([data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]);
 
             if magic == 0x04034B50 {
+                scanned_entries += 1;
                 let flags = u16::from_le_bytes([data[idx + 6], data[idx + 7]]);
                 let comp_size = u32::from_le_bytes([
                     data[idx + 18],
@@ -337,8 +342,17 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                 } else {
                     idx = payload_start.saturating_add(comp_size as usize);
                 }
+            } else if let Some(pos) = data[idx..]
+                .windows(4)
+                .position(|w| w == [0x50, 0x4B, 0x03, 0x04])
+            {
+                if pos == 0 {
+                    idx += 1;
+                } else {
+                    idx += pos;
+                }
             } else {
-                idx += 1;
+                break;
             }
         }
     }

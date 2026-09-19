@@ -270,18 +270,33 @@ fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(5), Constraint::Min(5)])
         .split(area);
 
+    let max_label_len = chunks[0].width.saturating_sub(10) as usize;
+    let stage_name = if app.current_stage_name.len() > max_label_len && max_label_len > 12 {
+        format!("{}...", &app.current_stage_name[..max_label_len - 3])
+    } else {
+        app.current_stage_name.clone()
+    };
+
     let gauge = Gauge::default()
         .block(
             Block::default()
                 .title(" Scan Progress ")
                 .borders(Borders::ALL),
         )
-        .gauge_style(Style::default().fg(Color::Cyan))
+        .gauge_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .bg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
         .percent(app.scan_progress_pct)
-        .label(format!(
-            "{}% - {}",
-            app.scan_progress_pct, app.current_stage_name
-        ));
+        .label(format!("{}% - {}", app.scan_progress_pct, stage_name));
 
     f.render_widget(gauge, chunks[0]);
 

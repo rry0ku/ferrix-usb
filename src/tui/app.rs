@@ -40,6 +40,12 @@ pub enum ScanEvent {
         index: usize,
         total: usize,
     },
+    Progress {
+        stage_id: String,
+        current: u64,
+        total: Option<u64>,
+        message: Option<String>,
+    },
     FindingFound(Finding),
     StageFinished(StageResult),
     ScanFinished {
@@ -63,6 +69,8 @@ pub struct App {
     pub is_scanning: bool,
     pub scan_progress_pct: u16,
     pub current_stage_name: String,
+    pub current_stage_index: usize,
+    pub total_stages: usize,
     pub completed_stages: Vec<StageResult>,
     pub all_findings: Vec<Finding>,
     pub selected_finding_idx: usize,
@@ -93,6 +101,8 @@ impl Default for App {
             is_scanning: false,
             scan_progress_pct: 0,
             current_stage_name: String::new(),
+            current_stage_index: 0,
+            total_stages: 0,
             completed_stages: Vec::new(),
             all_findings: Vec::new(),
             selected_finding_idx: 0,
@@ -238,6 +248,8 @@ impl App {
         self.is_scanning = true;
         self.scan_progress_pct = 0;
         self.current_stage_name = "Initializing scan...".to_string();
+        self.current_stage_index = 0;
+        self.total_stages = 0;
         self.completed_stages.clear();
         self.all_findings.clear();
         self.verdict = None;
@@ -250,7 +262,33 @@ impl App {
         let policy = self.policy.clone();
 
         thread::spawn(move || {
-            let ctx = crate::core::ScanContext::new(target_path.clone());
+            let (core_tx, core_rx) = channel::<crate::core::ScanEvent>();
+            let mut ctx = crate::core::ScanContext::new(target_path.clone());
+            ctx.event_sink = crate::core::EventSink::new(core_tx);
+
+            let tx_fwd = tx.clone();
+            thread::spawn(move || {
+                while let Ok(evt) = core_rx.recv() {
+                    match evt {
+                        crate::core::ScanEvent::Progress {
+                            stage_id,
+                            current,
+                            total,
+                            message,
+                        } => {
+                            let _ = tx_fwd.send(ScanEvent::Progress {
+                                stage_id,
+                                current,
+                                total,
+                                message,
+                            });
+                        }
+                        crate::core::ScanEvent::Finding(f) => {
+                            let _ = tx_fwd.send(ScanEvent::FindingFound(f));
+                        }
+                    }
+                }
+            });
 
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -407,13 +445,49 @@ impl App {
                 match event {
                     ScanEvent::StageStarted { name, index, total } => {
                         self.current_stage_name = name;
-                        self.scan_progress_pct = ((index as f32 / total as f32) * 100.0) as u16;
+                        self.current_stage_index = index;
+                        self.total_stages = total;
+                        if total > 0 && index > 0 {
+                            self.scan_progress_pct =
+                                (((index - 1) as f32 / total as f32) * 100.0) as u16;
+                        } else {
+                            self.scan_progress_pct = 0;
+                        }
+                    }
+                    ScanEvent::Progress {
+                        stage_id: _,
+                        current,
+                        total,
+                        message,
+                    } => {
+                        if let Some(tot) = total {
+                            if tot > 0 && self.total_stages > 0 && self.current_stage_index > 0 {
+                                let base_pct = ((self.current_stage_index - 1) as f32
+                                    / self.total_stages as f32)
+                                    * 100.0;
+                                let stage_slice = 100.0 / self.total_stages as f32;
+                                let frac = (current as f32 / tot as f32).clamp(0.0, 1.0);
+                                self.scan_progress_pct = (base_pct + frac * stage_slice) as u16;
+                            }
+                        }
+                        if let Some(msg) = message {
+                            if let Some(tot) = total {
+                                self.current_stage_name = format!("{msg} ({current}/{tot})");
+                            } else {
+                                self.current_stage_name = msg;
+                            }
+                        }
                     }
                     ScanEvent::FindingFound(f) => {
                         self.all_findings.push(f);
                     }
                     ScanEvent::StageFinished(res) => {
                         self.completed_stages.push(res);
+                        if self.total_stages > 0 && self.current_stage_index > 0 {
+                            self.scan_progress_pct =
+                                ((self.current_stage_index as f32 / self.total_stages as f32)
+                                    * 100.0) as u16;
+                        }
                     }
                     ScanEvent::ScanFinished {
                         verdict,

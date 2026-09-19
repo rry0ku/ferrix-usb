@@ -51,7 +51,8 @@ pub fn inspect_pdf_content(data: &[u8], media_path: &MediaPath, findings: &mut V
 
             let search_window = &data[payload_start..];
             if let Some(end_pos) = search_window.windows(9).position(|w| w == b"endstream") {
-                let mut payload_end = payload_start + end_pos;
+                let stream_end_actual = payload_start + end_pos;
+                let mut payload_end = stream_end_actual;
                 if payload_end > payload_start && data[payload_end - 1] == b'\n' {
                     payload_end -= 1;
                 }
@@ -60,40 +61,55 @@ pub fn inspect_pdf_content(data: &[u8], media_path: &MediaPath, findings: &mut V
                 }
 
                 let stream_bytes = &data[payload_start..payload_end];
-                let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
-                    stream_bytes,
-                    16 * 1024 * 1024,
-                )
-                .or_else(|_| {
-                    miniz_oxide::inflate::decompress_to_vec_with_limit(
+                let is_potential_zlib =
+                    stream_bytes.len() >= 2 && (stream_bytes[0] == 0x78 || stream_bytes[0] == 0x1F);
+                let dict_window = if stream_start >= 256 {
+                    &data[stream_start - 256..stream_start]
+                } else {
+                    &data[..stream_start]
+                };
+                let has_flate_dict = dict_window.windows(12).any(|w| w == b"/FlateDecode")
+                    || dict_window.windows(3).any(|w| w == b"/Fl");
+
+                if is_potential_zlib || has_flate_dict {
+                    let decompressed = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
                         stream_bytes,
                         16 * 1024 * 1024,
                     )
-                });
+                    .or_else(|_| {
+                        miniz_oxide::inflate::decompress_to_vec_with_limit(
+                            stream_bytes,
+                            16 * 1024 * 1024,
+                        )
+                    });
 
-                if let Ok(decomp) = decompressed {
-                    for &(pattern, reason) in search_patterns {
-                        if !detected_patterns.contains(pattern)
-                            && decomp.windows(pattern.len()).any(|w| w == pattern)
-                        {
-                            detected_patterns.insert(pattern);
-                            findings.push(Finding {
-                                id: "FX-FILE-008".to_string(),
-                                severity: Severity::High,
-                                confidence: Confidence::High,
-                                stage: "file_scan".to_string(),
-                                location: Location::Path(media_path.clone()),
-                                reason: reason.to_string(),
-                                evidence: format!(
-                                    "PDF compressed stream contains dangerous keyword '{}'",
-                                    String::from_utf8_lossy(pattern)
-                                ),
-                            });
+                    if let Ok(decomp) = decompressed {
+                        for &(pattern, reason) in search_patterns {
+                            if !detected_patterns.contains(pattern)
+                                && decomp.windows(pattern.len()).any(|w| w == pattern)
+                            {
+                                detected_patterns.insert(pattern);
+                                findings.push(Finding {
+                                    id: "FX-FILE-008".to_string(),
+                                    severity: Severity::High,
+                                    confidence: Confidence::High,
+                                    stage: "file_scan".to_string(),
+                                    location: Location::Path(media_path.clone()),
+                                    reason: reason.to_string(),
+                                    evidence: format!(
+                                        "PDF compressed stream contains dangerous keyword '{}'",
+                                        String::from_utf8_lossy(pattern)
+                                    ),
+                                });
+                            }
                         }
                     }
                 }
 
-                idx = payload_end + 9;
+                idx = stream_end_actual + 9;
+                if detected_patterns.len() == search_patterns.len() {
+                    break;
+                }
             } else {
                 idx = stream_start + 6;
             }

@@ -63,10 +63,18 @@ impl Stage for FileScanStage {
         }
 
         let discovered_files = extract_filesystem_files(&mut file, total_bytes, self.sector_size)?;
+        let total_files = discovered_files.len();
         let mut findings = Vec::new();
 
-        for entry in discovered_files {
+        for (idx, entry) in discovered_files.iter().enumerate() {
             let filename = String::from_utf8_lossy(entry.path.as_bytes()).to_string();
+
+            ctx.event_sink.emit(crate::core::ScanEvent::Progress {
+                stage_id: self.id().to_string(),
+                current: (idx + 1) as u64,
+                total: Some(total_files as u64),
+                message: Some(format!("scanning: {filename}")),
+            });
 
             check_filename_anomalies(&filename, &entry.path, &mut findings);
 
