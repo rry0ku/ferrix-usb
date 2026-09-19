@@ -12,6 +12,7 @@ pub use ntfs::*;
 
 use crate::core::{Finding, MediaPath, ScanContext, Stage, StageError};
 use crate::disk::partition::parse_disk_layout;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
@@ -170,23 +171,23 @@ impl Stage for FilesystemScanStage {
                         if root_cluster >= 2 {
                             let first_data_sector = fat.reserved_sectors as u64
                                 + (fat.num_fats as u64 * fat.sectors_per_fat as u64);
-                            let cluster_offset = part_offset.saturating_add(
-                                (first_data_sector
-                                    + (root_cluster as u64 - 2) * fat.sectors_per_cluster as u64)
-                                    * fat.bytes_per_sector as u64,
-                            );
-                            let cluster_bytes =
-                                fat.sectors_per_cluster as usize * fat.bytes_per_sector as usize;
-                            if file.seek(SeekFrom::Start(cluster_offset)).is_ok() {
-                                let mut buf = vec![0u8; cluster_bytes];
-                                if file.read_exact(&mut buf).is_ok() {
-                                    Some(buf)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+                            let chain = read_cluster_chain(
+                                &mut file,
+                                part_offset,
+                                &fat,
+                                root_cluster,
+                                1024,
+                            )
+                            .unwrap_or_default();
+                            read_chain_data(
+                                &mut file,
+                                part_offset,
+                                &fat,
+                                first_data_sector,
+                                &chain,
+                                1024 * 1024 * 4,
+                            )
+                            .ok()
                         } else {
                             None
                         }
@@ -301,30 +302,20 @@ pub fn extract_filesystem_files<R: Read + Seek>(
         }
 
         if let Ok(fat) = parse_fat_boot_sector(&sector0) {
-            let (dir_data, first_data_sector) = match fat.fat_type {
+            let (root_dir_data, first_data_sector) = match fat.fat_type {
                 FatType::Fat32 => {
                     let root_cluster = fat.root_cluster;
+                    let fds = fat.reserved_sectors as u64
+                        + (fat.num_fats as u64 * fat.sectors_per_fat as u64);
                     if root_cluster >= 2 {
-                        let fds = fat.reserved_sectors as u64
-                            + (fat.num_fats as u64 * fat.sectors_per_fat as u64);
-                        let cluster_offset = part_offset.saturating_add(
-                            (fds + (root_cluster as u64 - 2) * fat.sectors_per_cluster as u64)
-                                * fat.bytes_per_sector as u64,
-                        );
-                        let cluster_bytes =
-                            fat.sectors_per_cluster as usize * fat.bytes_per_sector as usize;
-                        if file.seek(SeekFrom::Start(cluster_offset)).is_ok() {
-                            let mut buf = vec![0u8; cluster_bytes];
-                            if file.read_exact(&mut buf).is_ok() {
-                                (Some(buf), fds)
-                            } else {
-                                (None, fds)
-                            }
-                        } else {
-                            (None, fds)
-                        }
+                        let chain = read_cluster_chain(file, part_offset, &fat, root_cluster, 1024)
+                            .unwrap_or_default();
+                        let data =
+                            read_chain_data(file, part_offset, &fat, fds, &chain, 1024 * 1024 * 4)
+                                .ok();
+                        (data, fds)
                     } else {
-                        (None, 0)
+                        (None, fds)
                     }
                 }
                 FatType::Fat12 | FatType::Fat16 => {
@@ -341,27 +332,33 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                             * fat.bytes_per_sector as u64,
                     );
                     let root_dir_bytes = fat.root_entries as usize * 32;
-                    if root_dir_bytes > 0 && file.seek(SeekFrom::Start(root_dir_offset)).is_ok() {
+                    let data = if root_dir_bytes > 0
+                        && file.seek(SeekFrom::Start(root_dir_offset)).is_ok()
+                    {
                         let mut buf = vec![0u8; root_dir_bytes];
                         if file.read_exact(&mut buf).is_ok() {
-                            (Some(buf), fds)
+                            Some(buf)
                         } else {
-                            (None, fds)
+                            None
                         }
                     } else {
-                        (None, fds)
-                    }
+                        None
+                    };
+                    (data, fds)
                 }
             };
 
-            if let Some(data) = dir_data {
+            let mut dir_queue: Vec<(String, u32, usize)> = Vec::new();
+
+            if let Some(data) = root_dir_data {
                 if let Ok((entries, _)) = parse_fat_directory(&data) {
                     for entry in entries {
                         let data_offset = if entry.cluster >= 2 {
-                            Some(part_offset.saturating_add(
-                                (first_data_sector
-                                    + (entry.cluster as u64 - 2) * fat.sectors_per_cluster as u64)
-                                    * fat.bytes_per_sector as u64,
+                            Some(cluster_to_byte_offset(
+                                part_offset,
+                                &fat,
+                                first_data_sector,
+                                entry.cluster,
                             ))
                         } else {
                             None
@@ -375,6 +372,67 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                             partition_index: part_index,
                             data_offset,
                         });
+
+                        if entry.is_dir && entry.cluster >= 2 {
+                            dir_queue.push((entry.name, entry.cluster, 1));
+                        }
+                    }
+                }
+            }
+
+            let mut visited_clusters = HashSet::new();
+            if fat.fat_type == FatType::Fat32 && fat.root_cluster >= 2 {
+                visited_clusters.insert(fat.root_cluster);
+            }
+
+            while let Some((dir_path, dir_cluster, depth)) = dir_queue.pop() {
+                if depth > 16 || !visited_clusters.insert(dir_cluster) {
+                    continue;
+                }
+
+                let chain = match read_cluster_chain(file, part_offset, &fat, dir_cluster, 1024) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+
+                let data = match read_chain_data(
+                    file,
+                    part_offset,
+                    &fat,
+                    first_data_sector,
+                    &chain,
+                    1024 * 1024 * 4,
+                ) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                if let Ok((entries, _)) = parse_fat_directory(&data) {
+                    for entry in entries {
+                        let child_path = format!("{dir_path}/{}", entry.name);
+                        let data_offset = if entry.cluster >= 2 {
+                            Some(cluster_to_byte_offset(
+                                part_offset,
+                                &fat,
+                                first_data_sector,
+                                entry.cluster,
+                            ))
+                        } else {
+                            None
+                        };
+
+                        discovered.push(DiscoveredFile {
+                            path: MediaPath::from(child_path.as_bytes()),
+                            size: entry.size,
+                            is_dir: entry.is_dir,
+                            attributes: entry.attributes,
+                            partition_index: part_index,
+                            data_offset,
+                        });
+
+                        if entry.is_dir && entry.cluster >= 2 && depth < 16 {
+                            dir_queue.push((child_path, entry.cluster, depth + 1));
+                        }
                     }
                 }
             }

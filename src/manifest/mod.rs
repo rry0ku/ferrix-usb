@@ -95,6 +95,15 @@ impl Manifest {
         device_path: &Path,
         pubkey: &VerifyingKey,
     ) -> Result<VerificationReport, StageError> {
+        self.verify_against_media_with_nonce_log(device_path, pubkey, None)
+    }
+
+    pub fn verify_against_media_with_nonce_log(
+        &self,
+        device_path: &Path,
+        pubkey: &VerifyingKey,
+        nonce_log_path: Option<&Path>,
+    ) -> Result<VerificationReport, StageError> {
         let mut mismatches = Vec::new();
 
         if let Err(e) = self.verify_signature(pubkey) {
@@ -116,6 +125,42 @@ impl Manifest {
                 expected: format!("manifest valid until timestamp {}", self.expires_at),
                 actual: format!("current timestamp {now} is expired"),
             });
+        }
+
+        if self.issued_at > now.saturating_add(300) {
+            mismatches.push(VerificationMismatch {
+                component: "issued_at".to_string(),
+                expected: format!("manifest issued in past (<= {now})"),
+                actual: format!("manifest issued in future ({})", self.issued_at),
+            });
+        }
+
+        if self.expires_at > 0 && self.expires_at < self.issued_at {
+            mismatches.push(VerificationMismatch {
+                component: "validity_window".to_string(),
+                expected: "expires_at >= issued_at".to_string(),
+                actual: format!(
+                    "expires_at {} is before issued_at {}",
+                    self.expires_at, self.issued_at
+                ),
+            });
+        }
+
+        if let Some(log_path) = nonce_log_path {
+            if log_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(log_path) {
+                    if content.lines().any(|l| l.trim() == self.nonce.trim()) {
+                        mismatches.push(VerificationMismatch {
+                            component: "nonce_replay".to_string(),
+                            expected: "unique unused manifest nonce".to_string(),
+                            actual: format!(
+                                "nonce '{}' already accepted in previous verification",
+                                self.nonce
+                            ),
+                        });
+                    }
+                }
+            }
         }
 
         let (current_device_hash, current_size) = hash_device_or_image(device_path)?;
@@ -201,6 +246,19 @@ impl Manifest {
             }
         }
 
+        if mismatches.is_empty() {
+            if let Some(log_path) = nonce_log_path {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(log_path)
+                {
+                    let _ = writeln!(f, "{}", self.nonce.trim());
+                }
+            }
+        }
+
         Ok(VerificationReport {
             valid: mismatches.is_empty(),
             mismatches,
@@ -208,6 +266,30 @@ impl Manifest {
             manifest_verdict: self.verdict,
         })
     }
+}
+
+pub fn check_and_record_nonce(nonce: &str, log_path: &Path) -> Result<bool, StageError> {
+    if log_path.exists() {
+        let content = std::fs::read_to_string(log_path)
+            .map_err(|e| StageError::Io(format!("failed to read nonce replay log: {e}")))?;
+        for line in content.lines() {
+            if line.trim() == nonce.trim() {
+                return Ok(false);
+            }
+        }
+    }
+
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|e| StageError::Io(format!("failed to open nonce replay log: {e}")))?;
+
+    writeln!(file, "{}", nonce.trim())
+        .map_err(|e| StageError::Io(format!("failed to append to nonce replay log: {e}")))?;
+
+    Ok(true)
 }
 
 pub fn generate_nonce() -> String {

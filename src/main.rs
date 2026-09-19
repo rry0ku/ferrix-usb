@@ -36,11 +36,74 @@ fn main() -> ExitCode {
                 return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
 
-            let ctx = ferrix_usb::core::ScanContext::new(scan_args.device.clone());
+            let mut ctx = ferrix_usb::core::ScanContext::new(scan_args.device.clone());
             let (policy, warning) = ferrix_usb::policy::load_policy(args.policy.as_deref(), None);
             if let Some(warn) = warning {
                 eprintln!("{warn}");
             }
+
+            let is_block_device = {
+                use std::os::unix::fs::FileTypeExt;
+                scan_args.device.starts_with("/dev/")
+                    || scan_args
+                        .device
+                        .metadata()
+                        .map(|m| m.file_type().is_block_device())
+                        .unwrap_or(false)
+            };
+
+            let temp_snapshot_path = if is_block_device {
+                let snap_path = args
+                    .out
+                    .as_ref()
+                    .map(|o| o.join("snapshot.img"))
+                    .unwrap_or_else(|| {
+                        std::env::temp_dir()
+                            .join(format!("ferrix-snapshot-{}.img", std::process::id()))
+                    });
+                if !args.json {
+                    println!(
+                        "Creating read-only snapshot of block device {}...",
+                        scan_args.device.display()
+                    );
+                }
+                match ferrix_usb::disk::snapshot::create_snapshot(
+                    &scan_args.device,
+                    &snap_path,
+                    &ctx.event_sink,
+                ) {
+                    Ok(s) => {
+                        ctx.snapshot_path = Some(s.path.clone());
+                        Some(s.path)
+                    }
+                    Err(e) => {
+                        eprintln!("Error creating device snapshot: {e}");
+                        return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                    }
+                }
+            } else {
+                None
+            };
+
+            if let Some(ref out_dir) = args.out {
+                if !out_dir.exists() {
+                    let _ = std::fs::create_dir_all(out_dir);
+                }
+            }
+
+            let scan_target = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
+            let mut read_paths: Vec<&std::path::Path> =
+                vec![scan_target.as_path(), scan_args.device.as_path()];
+            if let Some(ref p) = args.policy {
+                read_paths.push(p.as_path());
+            }
+
+            let mut write_paths: Vec<&std::path::Path> = Vec::new();
+            if let Some(ref o) = args.out {
+                write_paths.push(o.as_path());
+            }
+
+            let _ = ferrix_usb::sandbox::enter_sandbox(&read_paths, &write_paths);
 
             let device_stage = ferrix_usb::device::DeviceScanStage::new(policy.clone());
             let partition_stage = ferrix_usb::disk::PartitionScanStage::default();
@@ -104,11 +167,11 @@ fn main() -> ExitCode {
                 }
 
                 let (device_hash, device_size_bytes) =
-                    ferrix_usb::disk::snapshot::hash_device_or_image(&scan_args.device)
+                    ferrix_usb::disk::snapshot::hash_device_or_image(scan_target)
                         .unwrap_or_else(|_| (String::new(), 0));
 
                 let (partition_layout_hash, files) = {
-                    let file_res = File::open(&scan_args.device);
+                    let file_res = File::open(scan_target);
                     if let Ok(mut f) = file_res {
                         let layout = ferrix_usb::disk::partition::parse_disk_layout(
                             &mut f,
@@ -206,6 +269,12 @@ fn main() -> ExitCode {
                         );
                         println!("    Evidence: {}", f.evidence);
                     }
+                }
+            }
+
+            if args.out.is_none() {
+                if let Some(ref p) = temp_snapshot_path {
+                    let _ = std::fs::remove_file(p);
                 }
             }
 
@@ -319,7 +388,17 @@ fn main() -> ExitCode {
                 }
             };
 
-            match manifest.verify_against_media(&verify_args.device, &pubkey) {
+            let nonce_log_path = verify_args
+                .manifest
+                .parent()
+                .map(|p| p.join("accepted_nonces.log"))
+                .unwrap_or_else(|| PathBuf::from("accepted_nonces.log"));
+
+            match manifest.verify_against_media_with_nonce_log(
+                &verify_args.device,
+                &pubkey,
+                Some(&nonce_log_path),
+            ) {
                 Ok(report) => {
                     if args.json {
                         println!(

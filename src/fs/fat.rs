@@ -275,3 +275,139 @@ pub fn parse_fat_directory(dir_data: &[u8]) -> Result<(Vec<FatDirEntry>, Vec<Str
 
     Ok((entries, duplicates))
 }
+
+pub fn read_next_cluster<R: Read + Seek>(
+    reader: &mut R,
+    partition_offset: u64,
+    bpb: &FatBootSector,
+    cluster: u32,
+) -> Result<Option<u32>, StageError> {
+    let fat_offset =
+        partition_offset.saturating_add(bpb.reserved_sectors as u64 * bpb.bytes_per_sector as u64);
+
+    match bpb.fat_type {
+        FatType::Fat32 => {
+            let entry_offset = fat_offset.saturating_add(cluster as u64 * 4);
+            reader
+                .seek(SeekFrom::Start(entry_offset))
+                .map_err(|e| StageError::Io(format!("failed to seek FAT32 entry: {e}")))?;
+            let mut buf = [0u8; 4];
+            reader
+                .read_exact(&mut buf)
+                .map_err(|e| StageError::Io(format!("failed to read FAT32 entry: {e}")))?;
+            let val = u32::from_le_bytes(buf) & 0x0FFF_FFFF;
+            if !(2..0x0FFF_FFF8).contains(&val) {
+                Ok(None)
+            } else {
+                Ok(Some(val))
+            }
+        }
+        FatType::Fat16 => {
+            let entry_offset = fat_offset.saturating_add(cluster as u64 * 2);
+            reader
+                .seek(SeekFrom::Start(entry_offset))
+                .map_err(|e| StageError::Io(format!("failed to seek FAT16 entry: {e}")))?;
+            let mut buf = [0u8; 2];
+            reader
+                .read_exact(&mut buf)
+                .map_err(|e| StageError::Io(format!("failed to read FAT16 entry: {e}")))?;
+            let val = u16::from_le_bytes(buf) as u32;
+            if !(2..0xFFF8).contains(&val) {
+                Ok(None)
+            } else {
+                Ok(Some(val))
+            }
+        }
+        FatType::Fat12 => {
+            let entry_offset = fat_offset.saturating_add((cluster as u64 * 3) / 2);
+            reader
+                .seek(SeekFrom::Start(entry_offset))
+                .map_err(|e| StageError::Io(format!("failed to seek FAT12 entry: {e}")))?;
+            let mut buf = [0u8; 2];
+            reader
+                .read_exact(&mut buf)
+                .map_err(|e| StageError::Io(format!("failed to read FAT12 entry: {e}")))?;
+            let raw = u16::from_le_bytes(buf);
+            let val = if (cluster & 1) == 0 {
+                (raw & 0x0FFF) as u32
+            } else {
+                (raw >> 4) as u32
+            };
+            if !(2..0x0FF8).contains(&val) {
+                Ok(None)
+            } else {
+                Ok(Some(val))
+            }
+        }
+    }
+}
+
+pub fn read_cluster_chain<R: Read + Seek>(
+    reader: &mut R,
+    partition_offset: u64,
+    bpb: &FatBootSector,
+    start_cluster: u32,
+    max_clusters: usize,
+) -> Result<Vec<u32>, StageError> {
+    if start_cluster < 2 {
+        return Ok(Vec::new());
+    }
+
+    let mut chain = Vec::new();
+    let mut visited = HashSet::new();
+    let mut current = start_cluster;
+
+    while chain.len() < max_clusters && visited.insert(current) {
+        chain.push(current);
+        match read_next_cluster(reader, partition_offset, bpb, current)? {
+            Some(next) => current = next,
+            None => break,
+        }
+    }
+
+    Ok(chain)
+}
+
+pub fn cluster_to_byte_offset(
+    partition_offset: u64,
+    bpb: &FatBootSector,
+    first_data_sector: u64,
+    cluster: u32,
+) -> u64 {
+    partition_offset.saturating_add(
+        (first_data_sector + ((cluster as u64).saturating_sub(2)) * bpb.sectors_per_cluster as u64)
+            * bpb.bytes_per_sector as u64,
+    )
+}
+
+pub fn read_chain_data<R: Read + Seek>(
+    reader: &mut R,
+    partition_offset: u64,
+    bpb: &FatBootSector,
+    first_data_sector: u64,
+    chain: &[u32],
+    max_bytes: usize,
+) -> Result<Vec<u8>, StageError> {
+    let cluster_bytes = bpb.sectors_per_cluster as usize * bpb.bytes_per_sector as usize;
+    let mut out = Vec::new();
+
+    for &c in chain {
+        if out.len() >= max_bytes {
+            break;
+        }
+
+        let offset = cluster_to_byte_offset(partition_offset, bpb, first_data_sector, c);
+        if reader.seek(SeekFrom::Start(offset)).is_err() {
+            break;
+        }
+
+        let read_len = (max_bytes - out.len()).min(cluster_bytes);
+        let mut buf = vec![0u8; read_len];
+        if reader.read_exact(&mut buf).is_err() {
+            break;
+        }
+        out.extend_from_slice(&buf);
+    }
+
+    Ok(out)
+}

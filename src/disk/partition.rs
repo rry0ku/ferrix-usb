@@ -166,6 +166,80 @@ fn parse_mbr<R: Read + Seek>(
         }
     }
 
+    let mut extended_partitions = Vec::new();
+    for p in &partitions {
+        if let Some(t) = p.type_byte {
+            if t == 0x05 || t == 0x0F || t == 0x85 {
+                extended_partitions.push((p.start_lba, p.total_sectors));
+            }
+        }
+    }
+
+    let mut next_logical_index = 5u32;
+    for (ext_base_lba, ext_total_sectors) in extended_partitions {
+        let mut current_ebr_lba = ext_base_lba;
+        let mut visited_ebrs = std::collections::HashSet::new();
+        let max_logical_partitions = 64;
+
+        while visited_ebrs.len() < max_logical_partitions && visited_ebrs.insert(current_ebr_lba) {
+            let ebr_offset = current_ebr_lba.saturating_mul(sector_size as u64);
+            if reader.seek(SeekFrom::Start(ebr_offset)).is_err() {
+                break;
+            }
+
+            let mut ebr_buf = vec![0u8; 512];
+            if reader.read_exact(&mut ebr_buf).is_err() {
+                break;
+            }
+
+            if ebr_buf[510] != 0x55 || ebr_buf[511] != 0xAA {
+                break;
+            }
+
+            let entry0 = &ebr_buf[446..462];
+            let entry0_type = entry0[4];
+            let entry0_rel_lba =
+                u32::from_le_bytes([entry0[8], entry0[9], entry0[10], entry0[11]]) as u64;
+            let entry0_sectors =
+                u32::from_le_bytes([entry0[12], entry0[13], entry0[14], entry0[15]]) as u64;
+
+            if entry0_type != 0x00 && entry0_sectors > 0 {
+                let logical_start = current_ebr_lba.saturating_add(entry0_rel_lba);
+                let logical_end = logical_start
+                    .saturating_add(entry0_sectors)
+                    .saturating_sub(1);
+
+                partitions.push(Partition {
+                    index: next_logical_index,
+                    start_lba: logical_start,
+                    end_lba: logical_end,
+                    total_sectors: entry0_sectors,
+                    type_guid: None,
+                    type_byte: Some(entry0_type),
+                    bootable: entry0[0] == 0x80,
+                    name: None,
+                });
+                next_logical_index += 1;
+            }
+
+            let entry1 = &ebr_buf[462..478];
+            let entry1_type = entry1[4];
+            let entry1_rel_lba =
+                u32::from_le_bytes([entry1[8], entry1[9], entry1[10], entry1[11]]) as u64;
+
+            if (entry1_type == 0x05 || entry1_type == 0x0F || entry1_type == 0x85)
+                && entry1_rel_lba > 0
+            {
+                current_ebr_lba = ext_base_lba.saturating_add(entry1_rel_lba);
+                if current_ebr_lba >= ext_base_lba.saturating_add(ext_total_sectors) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     Ok((true, partitions, has_protective_mbr))
 }
 
