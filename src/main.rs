@@ -15,8 +15,17 @@ fn main() -> ExitCode {
 
     match args.command {
         None => {
-            eprintln!("TUI not implemented yet.");
-            ExitCode::from(EXIT_INTERNAL_ERROR as u8)
+            if args.no_tui {
+                eprintln!("Error: no command specified and --no-tui was requested");
+                return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+            }
+            match ferrix_usb::tui::run_tui() {
+                Ok(_) => ExitCode::from(EXIT_PASS as u8),
+                Err(e) => {
+                    eprintln!("TUI error: {e}");
+                    ExitCode::from(EXIT_INTERNAL_ERROR as u8)
+                }
+            }
         }
         Some(Commands::Scan(scan_args)) => {
             if !scan_args.device.exists() {
