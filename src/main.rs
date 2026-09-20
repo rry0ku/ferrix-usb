@@ -274,6 +274,49 @@ fn main() -> ExitCode {
                 }
             }
 
+            if scan_args.release {
+                if verdict == ferrix_usb::core::Verdict::Pass {
+                    let snap_to_release = temp_snapshot_path.as_ref().unwrap_or(scan_target);
+                    let dest_dir = args
+                        .out
+                        .as_ref()
+                        .map(|o| o.join("released"))
+                        .unwrap_or_else(|| PathBuf::from("released"));
+                    match ferrix_usb::release::release_snapshot_files(
+                        snap_to_release,
+                        &dest_dir,
+                        512,
+                    ) {
+                        Ok(rel_report) => {
+                            if !args.json {
+                                println!(
+                                    "\nRelease successful: {} files ({} bytes) extracted to '{}'",
+                                    rel_report.files_released,
+                                    rel_report.bytes_released,
+                                    rel_report.destination_dir.display()
+                                );
+                                if !rel_report.renames.is_empty() {
+                                    println!("Sanitized filenames ({}):", rel_report.renames.len());
+                                    for r in &rel_report.renames {
+                                        println!(
+                                            "  '{}' -> '{}' ({})",
+                                            r.original, r.sanitized, r.reason
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error during file release: {e}");
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "Warning: release requested but media verdict is {verdict}. No files released (fail closed)."
+                    );
+                }
+            }
+
             if args.out.is_none() {
                 if let Some(ref p) = temp_snapshot_path {
                     let _ = std::fs::remove_file(p);
@@ -513,7 +556,7 @@ fn main() -> ExitCode {
         }
         Some(Commands::Triage(triage_args)) => {
             let store_path = PathBuf::from("suppressions.json");
-            let store = match ferrix_usb::triage::SuppressionStore::load(&store_path) {
+            let mut store = match ferrix_usb::triage::SuppressionStore::load(&store_path) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Error loading suppression store: {e}");
@@ -522,6 +565,115 @@ fn main() -> ExitCode {
             };
 
             let now = ferrix_usb::triage::current_timestamp();
+
+            if triage_args.add {
+                let reason = match triage_args.reason {
+                    Some(ref r) if !r.trim().is_empty() => r.trim().to_string(),
+                    _ => {
+                        eprintln!("Error: --reason is required when adding a suppression");
+                        return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                    }
+                };
+
+                let scope = if let Some(ref h) = triage_args.hash {
+                    let clean_h = h.trim();
+                    if clean_h.len() != 64 || !clean_h.chars().all(|c| c.is_ascii_hexdigit()) {
+                        eprintln!("Error: --hash must be a 64-character hex BLAKE3 hash");
+                        return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                    }
+                    ferrix_usb::triage::SuppressionScope::FileHash(clean_h.to_lowercase())
+                } else if let (Some(ref r), Some(ref p)) =
+                    (&triage_args.rule, &triage_args.path_pattern)
+                {
+                    let clean_r = r.trim().to_uppercase();
+                    let clean_p = p.trim().to_string();
+                    if clean_p == "*" || clean_p == "**" || clean_p == "/*" {
+                        eprintln!("Error: wildcard-only path patterns are rejected");
+                        return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                    }
+                    if clean_r == "FX-DEV-001" {
+                        eprintln!(
+                            "Error: Critical BadUSB findings (FX-DEV-001) cannot be suppressed"
+                        );
+                        return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                    }
+                    ferrix_usb::triage::SuppressionScope::RuleAndPath {
+                        rule_id: clean_r,
+                        path_pattern: clean_p,
+                    }
+                } else {
+                    eprintln!("Error: adding a suppression requires either --hash or both --rule and --path-pattern");
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                };
+
+                let author = std::env::var("USER").unwrap_or_else(|_| "operator".to_string());
+                let duration_secs = triage_args.days.saturating_mul(86400);
+                let expiry = now.saturating_add(duration_secs);
+
+                let id_input = format!("{author}:{now}:{reason}");
+                let supp_id = format!(
+                    "SUP-{}",
+                    blake3::hash(id_input.as_bytes()).to_hex()[..8].to_uppercase()
+                );
+
+                let station_key_path = PathBuf::from("station.key");
+                let signature = if station_key_path.exists() {
+                    if let Ok(sk) = load_station_signing_key(&station_key_path) {
+                        use ed25519_dalek::Signer;
+                        let msg = format!("{supp_id}:{author}:{now}:{expiry}:{reason}");
+                        let sig = sk.sign(msg.as_bytes());
+                        Some(ferrix_usb::manifest::hex_encode(&sig.to_bytes()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let supp = ferrix_usb::triage::Suppression {
+                    id: supp_id,
+                    scope,
+                    reason,
+                    author,
+                    created_at: now,
+                    expires_at: expiry,
+                    signature,
+                };
+
+                if let Err(e) = store.add_suppression(supp.clone()) {
+                    eprintln!("Error adding suppression: {e}");
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+
+                if let Err(e) = store.save(&store_path) {
+                    eprintln!("Error saving suppression store: {e}");
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+
+                let audit_path = PathBuf::from("audit.jsonl");
+                let _ = ferrix_usb::audit::append_audit_entry(
+                    &audit_path,
+                    "suppression_added",
+                    Some(&supp.id),
+                    None,
+                    None,
+                    serde_json::json!({
+                        "suppression_id": supp.id,
+                        "author": supp.author,
+                        "scope": supp.scope,
+                        "reason": supp.reason,
+                        "expires_at": supp.expires_at,
+                    }),
+                );
+
+                println!("Suppression added successfully:");
+                println!("  ID:         {}", supp.id);
+                println!("  Author:     {}", supp.author);
+                println!("  Reason:     {}", supp.reason);
+                println!("  Expires at: {}", supp.expires_at);
+                return ExitCode::from(EXIT_PASS as u8);
+            }
+
             let active = store.list_active(now);
 
             if triage_args.list {
@@ -557,14 +709,151 @@ fn main() -> ExitCode {
                     }
                 }
             } else {
-                println!("Usage: ferrix triage --list to view active suppressions.");
+                println!("Usage: ferrix triage --list to view active suppressions, or ferrix triage --add [options]");
             }
 
             ExitCode::from(EXIT_PASS as u8)
         }
-        Some(Commands::Watch(_)) => {
-            eprintln!("Watch mode not implemented yet.");
-            ExitCode::from(EXIT_INTERNAL_ERROR as u8)
+        Some(Commands::Watch(watch_args)) => {
+            println!(
+                "Starting ferrix offline hotplug watch mode (polling interval: {}s)...",
+                watch_args.interval
+            );
+            println!("Monitoring /sys/bus/usb/devices/ for removable media (Ctrl+C to stop)...");
+
+            let (policy, warning) = ferrix_usb::policy::load_policy(args.policy.as_deref(), None);
+            if let Some(warn) = warning {
+                eprintln!("{warn}");
+            }
+
+            let mut seen_devices = std::collections::HashSet::new();
+
+            loop {
+                if let Ok(entries) = std::fs::read_dir("/sys/bus/usb/devices") {
+                    for entry_res in entries {
+                        let entry = match entry_res {
+                            Ok(e) => e,
+                            Err(_) => continue,
+                        };
+                        let p = entry.path();
+                        if p.join("idVendor").exists() && p.join("idProduct").exists() {
+                            let dev_key = p
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            if seen_devices.contains(&dev_key) {
+                                continue;
+                            }
+
+                            let auth_file = p.join("authorized");
+                            let is_unauthorized = std::fs::read_to_string(&auth_file)
+                                .map(|s| s.trim() == "0")
+                                .unwrap_or(false);
+
+                            if is_unauthorized {
+                                seen_devices.insert(dev_key.clone());
+                                println!(
+                                    "\n[HOTPLUG] Detected unauthorized USB device: {}",
+                                    p.display()
+                                );
+
+                                if let Ok(usb_dev) =
+                                    ferrix_usb::device::read_usb_device_from_sysfs(&p)
+                                {
+                                    println!("  Vendor ID:    {}", usb_dev.vendor_id);
+                                    println!("  Product ID:   {}", usb_dev.product_id);
+                                    if let Some(ref m) = usb_dev.manufacturer {
+                                        println!("  Manufacturer: {m}");
+                                    }
+                                    if let Some(ref pr) = usb_dev.product_name {
+                                        println!("  Product:      {pr}");
+                                    }
+                                    if let Some(ref s) = usb_dev.serial {
+                                        println!("  Serial:       {s}");
+                                    }
+
+                                    let pre_findings = ferrix_usb::device::check_device_anomalies(
+                                        &usb_dev, &policy,
+                                    );
+                                    let is_badusb = pre_findings.iter().any(|f| {
+                                        f.severity == ferrix_usb::core::Severity::Critical
+                                    });
+
+                                    if is_badusb {
+                                        eprintln!(
+                                            "  ALERT: BadUSB composite device detected! Storage + HID keyboard/mouse. Device will NEVER be authorized."
+                                        );
+                                        continue;
+                                    }
+
+                                    let has_storage = usb_dev.interfaces.iter().any(|i| {
+                                        i.interface_class
+                                            == ferrix_usb::device::USB_CLASS_MASS_STORAGE
+                                    }) || usb_dev.interfaces.is_empty();
+
+                                    if !has_storage {
+                                        println!(
+                                            "  Device does not expose mass storage. Skipping."
+                                        );
+                                        continue;
+                                    }
+
+                                    println!(
+                                        "  Descriptors clean. Mass storage interface approved."
+                                    );
+
+                                    if watch_args.auto_scan {
+                                        println!("  Authorizing USB mass storage...");
+                                        if let Err(e) = ferrix_usb::device::authorize_device(&p) {
+                                            eprintln!("  Failed to authorize USB device: {e}");
+                                            continue;
+                                        }
+
+                                        let mut block_dev = None;
+                                        for _ in 0..25 {
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                100,
+                                            ));
+                                            if let Some(b) =
+                                                ferrix_usb::device::find_block_device_for_usb_sysfs(
+                                                    &p,
+                                                )
+                                            {
+                                                block_dev = Some(b);
+                                                break;
+                                            }
+                                        }
+
+                                        if let Some(b) = block_dev {
+                                            let _ =
+                                                ferrix_usb::device::set_block_device_readonly(&b);
+                                            println!(
+                                                "  Block device bound: {} (set read-only)",
+                                                b.display()
+                                            );
+                                            println!(
+                                                "  Ready for scan: ferrix scan {}",
+                                                b.display()
+                                            );
+                                        } else {
+                                            eprintln!(
+                                                "  Timed out waiting for block device after authorization."
+                                            );
+                                        }
+                                    } else {
+                                        println!(
+                                            "  Ready for inspection. Run: ferrix scan {} (or launch ferrix TUI)",
+                                            p.display()
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_secs(watch_args.interval));
+            }
         }
     }
 }

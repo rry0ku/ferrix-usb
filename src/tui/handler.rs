@@ -103,6 +103,11 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
             KeyCode::Esc => app.screen = Screen::DeviceSelect,
             KeyCode::Char('i') => app.show_info_findings = !app.show_info_findings,
             KeyCode::Char('p') => app.screen = Screen::Report,
+            KeyCode::Char('r') => {
+                if app.verdict == Some(crate::core::Verdict::Pass) {
+                    let _ = app.release_verified_files();
+                }
+            }
             KeyCode::Char('t') => {
                 if !app.filtered_findings().is_empty() {
                     app.screen = Screen::Triage;

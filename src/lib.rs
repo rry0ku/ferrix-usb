@@ -7,6 +7,7 @@ pub mod egress;
 pub mod fs;
 pub mod manifest;
 pub mod policy;
+pub mod release;
 pub mod report;
 pub mod sandbox;
 pub mod scan;

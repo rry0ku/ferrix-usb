@@ -519,7 +519,7 @@ fn draw_results(f: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items).block(Block::default().title(count_label).borders(Borders::ALL));
     f.render_widget(list, sub_chunks[0]);
 
-    let detail_text = if let Some(f) = findings.get(app.selected_finding_idx) {
+    let mut detail_text = if let Some(f) = findings.get(app.selected_finding_idx) {
         vec![
             Line::from(vec![
                 Span::styled("Finding ID: ", Style::default().fg(Color::Cyan)),
@@ -561,6 +561,19 @@ fn draw_results(f: &mut Frame, area: Rect, app: &App) {
     } else {
         vec![Line::from("No finding selected.")]
     };
+
+    if app.verdict == Some(Verdict::Pass) {
+        detail_text.push(Line::from(""));
+        detail_text.push(Line::from(vec![
+            Span::styled(
+                "[r] ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Release verified files from snapshot to staging folder"),
+        ]));
+    }
 
     let detail = Paragraph::new(detail_text)
         .block(

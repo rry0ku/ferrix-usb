@@ -69,6 +69,12 @@ pub enum Commands {
 pub struct ScanArgs {
     #[arg(help = "Path to block device (e.g. /dev/sdb) or raw disk image file")]
     pub device: PathBuf,
+
+    #[arg(
+        long,
+        help = "Release verified files from snapshot to staging folder on PASS"
+    )]
+    pub release: bool,
 }
 
 #[derive(Args, Debug)]
@@ -117,7 +123,37 @@ pub struct ReportArgs {
 pub struct TriageArgs {
     #[arg(long, help = "List all active suppressions and their expiration dates")]
     pub list: bool,
+
+    #[arg(
+        long,
+        help = "Add a new suppression (requires --rule, --path or --hash, --reason)"
+    )]
+    pub add: bool,
+
+    #[arg(long, help = "Rule ID to suppress (e.g. FX-FILE-004)")]
+    pub rule: Option<String>,
+
+    #[arg(long, help = "Path pattern to suppress")]
+    pub path_pattern: Option<String>,
+
+    #[arg(long, help = "Exact file BLAKE3 hash to suppress")]
+    pub hash: Option<String>,
+
+    #[arg(long, help = "Written justification for suppression")]
+    pub reason: Option<String>,
+
+    #[arg(long, default_value = "90", help = "Suppression duration in days")]
+    pub days: u64,
 }
 
 #[derive(Args, Debug)]
-pub struct WatchArgs {}
+pub struct WatchArgs {
+    #[arg(
+        long,
+        help = "Automatically trigger scan when clean storage device is authorized"
+    )]
+    pub auto_scan: bool,
+
+    #[arg(long, default_value = "2", help = "Polling interval in seconds")]
+    pub interval: u64,
+}

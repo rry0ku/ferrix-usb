@@ -55,6 +55,7 @@ pub enum ScanEvent {
         stages: Vec<StageResult>,
         findings: Vec<Finding>,
         scan_id: String,
+        target_path: PathBuf,
     },
     ScanFailed(String),
 }
@@ -80,6 +81,7 @@ pub struct App {
     pub show_info_findings: bool,
     pub verdict: Option<Verdict>,
     pub scan_id: Option<String>,
+    pub snapshot_path: Option<PathBuf>,
     pub rx_event: Option<Receiver<ScanEvent>>,
     pub status_message: Option<String>,
     pub triage_reason_input: String,
@@ -113,6 +115,7 @@ impl Default for App {
             show_info_findings: false,
             verdict: None,
             scan_id: None,
+            snapshot_path: None,
             rx_event: None,
             status_message: None,
             triage_reason_input: String::new(),
@@ -496,11 +499,13 @@ impl App {
                         &required, &completed, &findings, &policy,
                     );
 
+                    let target_path = ctx.snapshot_path.unwrap_or(ctx.target_path);
                     let _ = tx.send(ScanEvent::ScanFinished {
                         verdict,
                         stages: completed,
                         findings,
                         scan_id,
+                        target_path,
                     });
                 }
                 ScanMode::Egress => {
@@ -554,6 +559,7 @@ impl App {
                         stages: completed,
                         findings,
                         scan_id,
+                        target_path: ctx.target_path,
                     });
                 }
             }
@@ -638,6 +644,7 @@ impl App {
                         stages,
                         findings,
                         scan_id,
+                        target_path,
                     } => {
                         self.scan_activity_log
                             .push(format!("Scan completed. Final verdict: {verdict:?}"));
@@ -645,6 +652,7 @@ impl App {
                         self.completed_stages = stages;
                         self.all_findings = findings;
                         self.scan_id = Some(scan_id);
+                        self.snapshot_path = Some(target_path);
                         self.is_scanning = false;
                         self.scan_progress_pct = 100;
                         self.screen = Screen::Results;
@@ -765,5 +773,30 @@ impl App {
         fs::write(&out_name, content).map_err(|e| e.to_string())?;
         self.report_export_path = Some(out_name.clone());
         Ok(out_name)
+    }
+
+    pub fn release_verified_files(&mut self) -> Result<crate::release::ReleaseReport, String> {
+        if self.verdict != Some(Verdict::Pass) {
+            return Err("Release blocked: verdict is not PASS (fail closed).".to_string());
+        }
+
+        let snap_path = match self.snapshot_path {
+            Some(ref p) => p.clone(),
+            None => match self.selected_device() {
+                Some(dev) => dev.path.clone(),
+                None => return Err("No device or snapshot available to release.".to_string()),
+            },
+        };
+
+        let dest_dir = PathBuf::from("released");
+        let report = crate::release::release_snapshot_files(&snap_path, &dest_dir, 512)
+            .map_err(|e| format!("Release error: {e}"))?;
+
+        self.status_message = Some(format!(
+            "Released {} files ({} bytes) to 'released/'",
+            report.files_released, report.bytes_released
+        ));
+
+        Ok(report)
     }
 }

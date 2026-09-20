@@ -183,3 +183,42 @@ fn test_suppression_store_save_and_load() {
 
     let _ = std::fs::remove_file(temp_path);
 }
+
+#[test]
+fn test_suppression_validation_empty_fields() {
+    let mut store = SuppressionStore::default();
+    let now = 1700000000;
+
+    let empty_reason = Suppression {
+        id: "SUP-ERR-1".to_string(),
+        scope: SuppressionScope::FileHash("hash123".to_string()),
+        reason: "   ".to_string(),
+        author: "admin".to_string(),
+        created_at: now,
+        expires_at: now + 1000,
+        signature: None,
+    };
+    assert!(store.add_suppression(empty_reason).is_err());
+
+    let empty_author = Suppression {
+        id: "SUP-ERR-2".to_string(),
+        scope: SuppressionScope::FileHash("hash123".to_string()),
+        reason: "valid reason".to_string(),
+        author: "   ".to_string(),
+        created_at: now,
+        expires_at: now + 1000,
+        signature: None,
+    };
+    assert!(store.add_suppression(empty_author).is_err());
+
+    let invalid_expiry = Suppression {
+        id: "SUP-ERR-3".to_string(),
+        scope: SuppressionScope::FileHash("hash123".to_string()),
+        reason: "valid reason".to_string(),
+        author: "admin".to_string(),
+        created_at: now,
+        expires_at: now,
+        signature: None,
+    };
+    assert!(store.add_suppression(invalid_expiry).is_err());
+}
