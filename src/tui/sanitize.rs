@@ -8,14 +8,28 @@ pub fn sanitize_terminal_string(s: &str) -> String {
 
         if c == '\x1b' {
             i += 1;
-            if i < chars.len() && chars[i] == '[' {
-                i += 1;
-                while i < chars.len() {
-                    let next = chars[i];
+            if i < chars.len() {
+                let next = chars[i];
+                if next == '[' {
                     i += 1;
-                    if ('@'..='~').contains(&next) {
-                        break;
+                    while i < chars.len() {
+                        let ch = chars[i];
+                        i += 1;
+                        if ('@'..='~').contains(&ch) {
+                            break;
+                        }
                     }
+                } else if next == ']' || next == 'P' || next == '_' || next == '^' {
+                    i += 1;
+                    while i < chars.len() {
+                        let ch = chars[i];
+                        i += 1;
+                        if ch == '\x07' || (ch == '\\' && i >= 2 && chars[i - 2] == '\x1b') {
+                            break;
+                        }
+                    }
+                } else {
+                    i += 1;
                 }
             }
             continue;

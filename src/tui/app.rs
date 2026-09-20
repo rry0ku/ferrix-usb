@@ -202,7 +202,10 @@ impl App {
                     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                     if ext == "raw" || ext == "img" {
                         let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                        let name = path.file_name().unwrap().to_string_lossy().to_string();
+                        let name = path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "image.raw".to_string());
                         list.push(DeviceEntry {
                             path: path.clone(),
                             name,

@@ -125,7 +125,13 @@ pub fn unmount_device_partitions(device_path: &Path) -> Result<Vec<String>, Stag
                 "Refusing to unmount protected system mount point '{mp}'"
             )));
         }
+        if mp.is_empty() || mp.contains('\0') || mp.starts_with('-') {
+            return Err(StageError::Io(format!(
+                "Refusing to unmount invalid or suspicious mount point '{mp}'"
+            )));
+        }
         let status = std::process::Command::new("umount")
+            .arg("--")
             .arg(&mp)
             .status()
             .map_err(|e| StageError::Io(format!("failed to execute umount {mp}: {e}")))?;

@@ -290,3 +290,32 @@ fn test_hidden_executable_quarantines() {
     let verdict = resolve_verdict(&[stage.id()], &[stage_result], &findings);
     assert_eq!(verdict, Verdict::Quarantine);
 }
+
+#[test]
+fn test_zip_path_traversal_windows_drive_and_null_bytes() {
+    let mut zip_data = Vec::new();
+    zip_data.extend_from_slice(b"PK\x03\x04");
+    zip_data.extend_from_slice(&20u16.to_le_bytes());
+    zip_data.extend_from_slice(&0u16.to_le_bytes());
+    zip_data.extend_from_slice(&0u16.to_le_bytes());
+    zip_data.extend_from_slice(&0u16.to_le_bytes());
+    zip_data.extend_from_slice(&0u16.to_le_bytes());
+    zip_data.extend_from_slice(&0u32.to_le_bytes());
+    zip_data.extend_from_slice(&10u32.to_le_bytes());
+    zip_data.extend_from_slice(&10u32.to_le_bytes());
+    let evil_name = b"C:\\Windows\\evil.exe";
+    zip_data.extend_from_slice(&(evil_name.len() as u16).to_le_bytes());
+    zip_data.extend_from_slice(&0u16.to_le_bytes());
+    zip_data.extend_from_slice(evil_name);
+    zip_data.extend_from_slice(b"1234567890");
+
+    let img = make_fat32_disk_with_file("ESCAPE", "ZIP", &zip_data, false);
+    let path = write_temp_image("ferrix_test_zip_win_drive.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = FileScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.iter().any(|f| f.id == "FX-FILE-006"));
+}

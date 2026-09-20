@@ -1,6 +1,8 @@
 use crate::core::{EventSink, ScanEvent, StageError};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub struct Snapshot {
@@ -29,17 +31,17 @@ pub fn create_snapshot(
         }
     }
 
-    let mut dest_file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(destination_path)
-        .map_err(|e| {
-            StageError::Io(format!(
-                "failed to create snapshot {}: {e}",
-                destination_path.display()
-            ))
-        })?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut dest_file = options.open(destination_path).map_err(|e| {
+        StageError::Io(format!(
+            "failed to create snapshot {}: {e}",
+            destination_path.display()
+        ))
+    })?;
 
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0u8; 128 * 1024];
@@ -80,6 +82,9 @@ pub fn create_snapshot(
 
     if let Ok(metadata) = dest_file.metadata() {
         let mut perms = metadata.permissions();
+        #[cfg(unix)]
+        perms.set_mode(0o400);
+        #[cfg(not(unix))]
         perms.set_readonly(true);
         let _ = dest_file.set_permissions(perms);
     }

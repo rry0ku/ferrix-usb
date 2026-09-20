@@ -17,6 +17,16 @@ fn find_eocd(data: &[u8]) -> Option<usize> {
     None
 }
 
+fn is_path_traversal_entry(name: &str) -> bool {
+    name.contains("..")
+        || name.starts_with('/')
+        || name.starts_with('\\')
+        || name.contains('\0')
+        || (name.len() >= 2
+            && name.as_bytes()[1] == b':'
+            && name.as_bytes()[0].is_ascii_alphabetic())
+}
+
 pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut Vec<Finding>) {
     let mut total_uncompressed_bytes = 0u64;
 
@@ -95,10 +105,7 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                     let entry_name =
                         String::from_utf8_lossy(&data[name_start..name_end]).to_string();
 
-                    if entry_name.contains("..")
-                        || entry_name.starts_with('/')
-                        || entry_name.starts_with('\\')
-                    {
+                    if is_path_traversal_entry(&entry_name) {
                         findings.push(Finding {
                             id: "FX-FILE-006".to_string(),
                             severity: Severity::High,
@@ -256,10 +263,7 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                     let entry_name =
                         String::from_utf8_lossy(&data[name_start..name_end]).to_string();
 
-                    if entry_name.contains("..")
-                        || entry_name.starts_with('/')
-                        || entry_name.starts_with('\\')
-                    {
+                    if is_path_traversal_entry(&entry_name) {
                         findings.push(Finding {
                             id: "FX-FILE-006".to_string(),
                             severity: Severity::High,

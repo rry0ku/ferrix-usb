@@ -217,3 +217,29 @@ fn test_office_metadata_detected() {
         && f.severity == Severity::Medium
         && f.reason.contains("Office")));
 }
+
+#[test]
+fn test_egress_zero_sector_size_does_not_panic() {
+    use ferrix_usb::disk::DiskLayout;
+    use ferrix_usb::egress::{scan_unallocated_remnants, verify_wipe_pattern};
+    use std::io::Cursor;
+
+    let layout = DiskLayout {
+        sector_size: 0,
+        total_sectors: 100,
+        table_type: ferrix_usb::disk::PartitionTableType::None,
+        partitions: Vec::new(),
+        has_protective_mbr: false,
+        primary_gpt_valid: false,
+        backup_gpt_valid: false,
+        gpt_differs_from_backup: false,
+        backup_gpt_lba_mismatch: false,
+        mbr_partition_count: 0,
+        gpt_partition_count: 0,
+    };
+
+    let mut cursor = Cursor::new(vec![0u8; 1024]);
+    let mut findings = Vec::new();
+    assert!(scan_unallocated_remnants(&mut cursor, &layout, 0, &mut findings).is_ok());
+    assert!(verify_wipe_pattern(&mut cursor, &layout, 0, &mut findings).is_ok());
+}

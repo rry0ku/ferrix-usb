@@ -73,6 +73,9 @@ pub fn scan_unallocated_remnants<R: Read + Seek>(
     sector_size: u32,
     findings: &mut Vec<Finding>,
 ) -> Result<(), StageError> {
+    if sector_size == 0 {
+        return Ok(());
+    }
     let gaps = find_unallocated_gaps(layout);
 
     for (gap_start, gap_end) in gaps {
@@ -131,7 +134,12 @@ fn check_slice_for_remnants(
         for &(sig, name) in signatures {
             if sub.starts_with(sig) {
                 let offset = base_offset.saturating_add(i as u64);
-                let lba = offset / sector_size as u64;
+                let eff_sec = if sector_size == 0 {
+                    512
+                } else {
+                    sector_size as u64
+                };
+                let lba = offset / eff_sec;
                 findings.push(Finding {
                     id: "FX-EGR-001".to_string(),
                     severity: Severity::High,
@@ -155,6 +163,9 @@ pub fn verify_wipe_pattern<R: Read + Seek>(
     sector_size: u32,
     findings: &mut Vec<Finding>,
 ) -> Result<(), StageError> {
+    if sector_size == 0 {
+        return Ok(());
+    }
     let gaps = find_unallocated_gaps(layout);
 
     for (gap_start, gap_end) in gaps {
@@ -186,7 +197,12 @@ pub fn verify_wipe_pattern<R: Read + Seek>(
             if !is_zeroed {
                 let entropy = shannon_entropy(slice);
                 if entropy < 7.5 {
-                    let lba = current_chunk_offset / sector_size as u64;
+                    let eff_sec = if sector_size == 0 {
+                        512
+                    } else {
+                        sector_size as u64
+                    };
+                    let lba = current_chunk_offset / eff_sec;
                     findings.push(Finding {
                         id: "FX-EGR-002".to_string(),
                         severity: Severity::High,

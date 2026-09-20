@@ -124,3 +124,18 @@ fn test_app_triage_suppression_flow() {
 
     let _ = fs::remove_file("suppressions.json");
 }
+
+#[test]
+fn test_terminal_string_sanitization_osc_and_dcs() {
+    let osc52 = "\x1b]52;c;evil_clipboard_payload\x07CleanText";
+    let sanitized = sanitize_terminal_string(osc52);
+    assert_eq!(sanitized, "CleanText");
+
+    let osc_title = "\x1b]0;EvilTitle\x1b\\NormalText";
+    let sanitized_title = sanitize_terminal_string(osc_title);
+    assert_eq!(sanitized_title, "NormalText");
+
+    let dcs = "\x1bPEvilDcs\x1b\\AfterDcs";
+    let sanitized_dcs = sanitize_terminal_string(dcs);
+    assert_eq!(sanitized_dcs, "AfterDcs");
+}

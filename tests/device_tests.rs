@@ -204,3 +204,13 @@ fn test_system_device_and_mount_point_checks() {
         }
     }
 }
+
+#[test]
+fn test_unmount_invalid_device_rejected() {
+    use ferrix_usb::device::unmount_device_partitions;
+    use std::path::Path;
+
+    let res = unmount_device_partitions(Path::new("/dev/nonexistent_device_test_12345"));
+    assert!(res.is_ok());
+    assert!(res.unwrap().is_empty());
+}

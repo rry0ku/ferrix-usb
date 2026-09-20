@@ -1,6 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn is_valid_username(user: &str) -> bool {
+    !user.is_empty()
+        && user.len() <= 32
+        && !user.starts_with('-')
+        && user
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 pub struct StationProtectionGuard {
     pub saved_authorized_defaults: Vec<(PathBuf, String)>,
     pub stopped_udisks2: bool,
@@ -63,11 +72,12 @@ impl StationProtectionGuard {
 
         let mut restored_gnome_automount = None;
         if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-            if !sudo_user.is_empty() {
+            if is_valid_username(&sudo_user) {
                 let check_gnome = std::process::Command::new("sudo")
                     .args([
                         "-u",
                         &sudo_user,
+                        "--",
                         "gsettings",
                         "get",
                         "org.gnome.desktop.media-handling",
@@ -81,6 +91,7 @@ impl StationProtectionGuard {
                             .args([
                                 "-u",
                                 &sudo_user,
+                                "--",
                                 "gsettings",
                                 "set",
                                 "org.gnome.desktop.media-handling",
@@ -92,6 +103,7 @@ impl StationProtectionGuard {
                             .args([
                                 "-u",
                                 &sudo_user,
+                                "--",
                                 "gsettings",
                                 "set",
                                 "org.gnome.desktop.media-handling",
@@ -127,11 +139,12 @@ impl StationProtectionGuard {
 
         if self.restored_gnome_automount == Some(true) {
             if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-                if !sudo_user.is_empty() {
+                if is_valid_username(&sudo_user) {
                     let _ = std::process::Command::new("sudo")
                         .args([
                             "-u",
                             &sudo_user,
+                            "--",
                             "gsettings",
                             "set",
                             "org.gnome.desktop.media-handling",
@@ -143,6 +156,7 @@ impl StationProtectionGuard {
                         .args([
                             "-u",
                             &sudo_user,
+                            "--",
                             "gsettings",
                             "set",
                             "org.gnome.desktop.media-handling",

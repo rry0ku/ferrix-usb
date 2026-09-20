@@ -74,6 +74,7 @@ ferrix-usb needs elevated rights only to read block devices and change sysfs aut
 8. **Least privilege.** Drop privileges right after opening the device fd.
 9. **Snapshot first.** Scan and release from a read-only snapshot, never from the live drive.
 10. **Precise, not noisy.** Do not flag safe files. Cut false positives with context and evidence, never by lowering detection. Learning is operator-approved and scoped, never automatic from scanned media (section 10).
+11. **Continuous vulnerability defense.** Actively look for vulnerabilities and fix them all whenever changes are made. Continuously audit all modified and surrounding code paths for security weaknesses, including unchecked input, bounds violations, command and flag injection, privilege escalation, parser vulnerabilities, panics on malformed data, and TOCTOU races. Never leave an identified vulnerability unpatched.
 
 ## 5. Commands
 
@@ -409,6 +410,7 @@ The TUI is the default interface when run with no subcommand in an interactive t
 - Do not skip tests to make progress. No check ships without its sample image.
 - Never weaken or bypass a requirement in section 9 for convenience. If one blocks progress, flag it.
 - Every new check ships with a clean sample test and a note on its false positive risk. Fix noisy rules by making them more precise, not by suppressing them.
+- **Actively look for vulnerabilities and fix them all whenever changes are made.** Every code modification must include an active security audit of all touched and surrounding code paths. Remediate all discovered vulnerabilities immediately across the entire codebase.
 
 ## 20. Roadmap
 
