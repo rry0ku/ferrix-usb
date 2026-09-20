@@ -5,9 +5,6 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-0078D4?logo=linux&logoColor=white&style=flat-square)](#)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-brightgreen?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust&logoColor=white&style=flat-square)](#)
-[![Security](https://img.shields.io/badge/network-zero--network%20%2F%20offline-blue?style=flat-square)](#)
-[![Sandbox](https://img.shields.io/badge/sandbox-landlock%20%2B%20seccomp-blueviolet?style=flat-square)](#)
-[![Tests](https://img.shields.io/badge/tests-103%20passed-success?style=flat-square)](#)
 [![Crates.io](https://img.shields.io/badge/crates.io-ferrix--usb-blue?logo=rust&style=flat-square)](https://crates.io/crates/ferrix-usb)
 
 <br/>
