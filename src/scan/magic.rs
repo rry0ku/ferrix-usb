@@ -162,7 +162,8 @@ pub fn detect_content_type(data: &[u8]) -> DetectedType {
         return DetectedType::Xz;
     }
 
-    if data.len() >= 7 && (&data[0..7] == b"Rar!\x1A\x07\x00" || &data[0..7] == b"Rar!\x1A\x07\x01") {
+    if data.len() >= 7 && (&data[0..7] == b"Rar!\x1A\x07\x00" || &data[0..7] == b"Rar!\x1A\x07\x01")
+    {
         return DetectedType::Rar;
     }
 
@@ -252,20 +253,30 @@ pub fn detect_content_type(data: &[u8]) -> DetectedType {
 pub fn expected_risk_class_from_extension(ext: &str) -> RiskClass {
     match ext.to_lowercase().as_str() {
         "exe" | "dll" | "sys" | "scr" | "bin" | "elf" | "so" | "sh" | "bash" | "bat" | "cmd"
-        | "vbs" | "ps1" | "wsf" | "pif" | "com" => RiskClass::Executable,
-        "pdf" | "docx" | "xlsx" | "pptx" | "odt" | "ods" | "odp" | "rtf" => RiskClass::Document,
-        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "tgz" | "tbz2" => RiskClass::Archive,
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" | "tif" => {
-            RiskClass::Image
+        | "vbs" | "ps1" | "wsf" | "pif" | "com" | "cpl" | "msi" | "msp" | "gadget" | "hta"
+        | "jar" => RiskClass::Executable,
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "ods" | "odp"
+        | "rtf" | "epub" | "mobi" | "azw3" | "djvu" | "pages" | "numbers" | "key" | "wps"
+        | "oxps" | "xps" | "tex" | "bib" => RiskClass::Document,
+        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "tgz" | "tbz2" | "txz" | "zst"
+        | "lz4" | "lzma" | "cab" | "iso" | "img" | "cpio" | "ar" => RiskClass::Archive,
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" | "tif"
+        | "psd" | "ai" | "raw" | "cr2" | "nef" | "heic" | "heif" | "avif" | "xcf" | "indd"
+        | "eps" | "cdr" | "dcm" | "dwg" | "dxf" => RiskClass::Image,
+        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "wma" | "opus" | "mid" | "midi"
+        | "alac" | "aiff" | "ape" | "ac3" | "dts" | "amr" | "mka" => RiskClass::Audio,
+        "mp4" | "mkv" | "avi" | "mov" | "webm" | "wmv" | "flv" | "m4v" | "3gp" | "3g2" | "mpg"
+        | "mpeg" | "ts" | "vob" | "ogv" => RiskClass::Video,
+        "txt" | "csv" | "tsv" | "log" | "json" | "xml" | "yaml" | "yml" | "md" | "markdown"
+        | "ini" | "conf" | "cfg" | "toml" | "properties" | "html" | "htm" | "css" | "scss"
+        | "sass" | "less" | "js" | "jsx" | "ts" | "tsx" | "rs" | "py" | "c" | "cpp" | "cxx"
+        | "cc" | "h" | "hpp" | "hxx" | "go" | "java" | "kt" | "kts" | "cs" | "swift" | "rb"
+        | "php" | "lua" | "sql" | "r" | "scala" | "pl" | "pm" | "diff" | "patch" | "env" => {
+            RiskClass::Text
         }
-        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "wma" | "opus" | "mid" | "midi" => {
-            RiskClass::Audio
-        }
-        "mp4" | "mkv" | "avi" | "mov" | "webm" | "wmv" | "flv" | "m4v" => RiskClass::Video,
-        "txt" | "csv" | "tsv" | "log" | "json" | "xml" | "yaml" | "yml" | "md" | "ini"
-        | "conf" | "cfg" | "html" | "htm" | "css" | "js" | "ts" | "rs" | "py" | "c" | "cpp"
-        | "h" | "hpp" => RiskClass::Text,
-        "db" | "sqlite" | "sqlite3" | "sql" => RiskClass::Data,
+        "db" | "sqlite" | "sqlite3" | "parquet" | "arrow" | "dat" | "hex" | "dump" | "ttf"
+        | "otf" | "woff" | "woff2" | "eot" | "stl" | "obj" | "fbx" | "blend" | "step" | "stp"
+        | "iges" | "mat" | "hdf5" | "h5" | "nc" | "fits" => RiskClass::Data,
         _ => RiskClass::Unknown,
     }
 }

@@ -55,7 +55,8 @@ impl Stage for FilesystemScanStage {
         let mut file = crate::disk::snapshot::open_device_or_file_with_retry(
             scan_path,
             std::time::Duration::from_secs(3),
-        ).map_err(|e| {
+        )
+        .map_err(|e| {
             StageError::Io(format!(
                 "failed to open scan target {}: {e}",
                 scan_path.display()

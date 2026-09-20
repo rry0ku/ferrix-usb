@@ -37,12 +37,13 @@ impl Stage for PartitionScanStage {
 
     fn run(&self, ctx: &ScanContext) -> Result<Vec<Finding>, StageError> {
         let scan_path = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
-        let mut file = open_device_or_file_with_retry(scan_path, std::time::Duration::from_secs(3)).map_err(|e| {
-            StageError::Io(format!(
-                "failed to open scan target {}: {e}",
-                scan_path.display()
-            ))
-        })?;
+        let mut file = open_device_or_file_with_retry(scan_path, std::time::Duration::from_secs(3))
+            .map_err(|e| {
+                StageError::Io(format!(
+                    "failed to open scan target {}: {e}",
+                    scan_path.display()
+                ))
+            })?;
 
         let total_bytes = crate::disk::snapshot::get_device_or_file_size(&file, scan_path);
 

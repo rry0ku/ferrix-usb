@@ -12,8 +12,10 @@ impl DeviceMonitor {
     }
 
     pub fn verify_device_unchanged(&self) -> Result<(), StageError> {
-        let current = read_usb_device_from_sysfs(&self.initial_device.sysfs_path)
-            .map_err(|_| StageError::Internal("Device disconnected! Inspection aborted.".to_string()))?;
+        let current =
+            read_usb_device_from_sysfs(&self.initial_device.sysfs_path).map_err(|_| {
+                StageError::Internal("Device disconnected! Inspection aborted.".to_string())
+            })?;
 
         if current.vendor_id != self.initial_device.vendor_id
             || current.product_id != self.initial_device.product_id

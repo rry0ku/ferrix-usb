@@ -162,15 +162,15 @@ pub fn create_snapshot(
     destination_path: &Path,
     event_sink: &EventSink,
 ) -> Result<Snapshot, StageError> {
-    let mut source_file = open_device_or_file_with_retry(
-        source_path,
-        std::time::Duration::from_secs(3),
-    ).map_err(|e| {
-        StageError::Io(format!(
-            "failed to open source {}: {e}",
-            source_path.display()
-        ))
-    })?;
+    let mut source_file =
+        open_device_or_file_with_retry(source_path, std::time::Duration::from_secs(3)).map_err(
+            |e| {
+                StageError::Io(format!(
+                    "failed to open source {}: {e}",
+                    source_path.display()
+                ))
+            },
+        )?;
 
     let total_size = get_device_or_file_size(&source_file, source_path);
 

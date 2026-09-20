@@ -19,9 +19,10 @@ impl YaraStringPattern {
                 }
                 let slice = &data[offset..offset + pattern.len()];
                 if *nocase {
-                    slice.iter().zip(pattern.iter()).all(|(a, b)| {
-                        a.to_ascii_lowercase() == b.to_ascii_lowercase()
-                    })
+                    slice
+                        .iter()
+                        .zip(pattern.iter())
+                        .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
                 } else {
                     slice == pattern.as_slice()
                 }
@@ -92,12 +93,11 @@ pub enum ConditionExpr {
 impl ConditionExpr {
     pub fn evaluate(&self, string_matches: &HashMap<String, Vec<usize>>) -> bool {
         match self {
-            ConditionExpr::StringRef(name) => {
-                string_matches.get(name).map(|v| !v.is_empty()).unwrap_or(false)
-            }
-            ConditionExpr::AnyOfThem => {
-                string_matches.values().any(|v| !v.is_empty())
-            }
+            ConditionExpr::StringRef(name) => string_matches
+                .get(name)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false),
+            ConditionExpr::AnyOfThem => string_matches.values().any(|v| !v.is_empty()),
             ConditionExpr::AllOfThem => {
                 !string_matches.is_empty() && string_matches.values().all(|v| !v.is_empty())
             }
@@ -230,7 +230,11 @@ fn parse_meta_line(line: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = line.splitn(2, '=').collect();
     if parts.len() == 2 {
         let k = parts[0].trim().to_string();
-        let v = parts[1].trim().trim_matches('"').trim_matches('\'').to_string();
+        let v = parts[1]
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
         Some((k, v))
     } else {
         None
@@ -243,7 +247,9 @@ fn parse_string_line(line: &str) -> Result<Option<(String, YaraStringPattern)>, 
     }
     let parts: Vec<&str> = line.splitn(2, '=').collect();
     if parts.len() != 2 {
-        return Err(StageError::Parse(format!("invalid string definition: {line}")));
+        return Err(StageError::Parse(format!(
+            "invalid string definition: {line}"
+        )));
     }
     let var_name = parts[0].trim().to_string();
     let rhs = parts[1].trim();
@@ -257,14 +263,16 @@ fn parse_string_line(line: &str) -> Result<Option<(String, YaraStringPattern)>, 
             } else if let Ok(b) = u8::from_str_radix(token, 16) {
                 pattern.push(Some(b));
             } else {
-                return Err(StageError::Parse(format!("invalid hex byte in YARA: {token}")));
+                return Err(StageError::Parse(format!(
+                    "invalid hex byte in YARA: {token}"
+                )));
             }
         }
         Ok(Some((var_name, YaraStringPattern::Hex(pattern))))
     } else if let Some(str_body) = rhs.strip_prefix('"') {
-        let end_idx = str_body.rfind('"').ok_or_else(|| {
-            StageError::Parse(format!("unterminated string literal: {rhs}"))
-        })?;
+        let end_idx = str_body
+            .rfind('"')
+            .ok_or_else(|| StageError::Parse(format!("unterminated string literal: {rhs}")))?;
         let str_val = &str_body[..end_idx];
         let modifiers = str_body[end_idx + 1..].trim();
         let nocase = modifiers.contains("nocase");
@@ -282,7 +290,9 @@ fn parse_string_line(line: &str) -> Result<Option<(String, YaraStringPattern)>, 
             )))
         }
     } else {
-        Err(StageError::Parse(format!("unsupported YARA string format: {rhs}")))
+        Err(StageError::Parse(format!(
+            "unsupported YARA string format: {rhs}"
+        )))
     }
 }
 
@@ -358,13 +368,19 @@ fn find_binary_operator(s: &str, op: &str) -> Option<usize> {
 pub fn load_yara_rules_from_path(path: &Path) -> Result<Vec<YaraRule>, StageError> {
     if path.is_file() {
         let content = fs::read_to_string(path).map_err(|e| {
-            StageError::Io(format!("failed to read YARA rule file {}: {e}", path.display()))
+            StageError::Io(format!(
+                "failed to read YARA rule file {}: {e}",
+                path.display()
+            ))
         })?;
         parse_yara_rules(&content)
     } else if path.is_dir() {
         let mut all_rules = Vec::new();
         let entries = fs::read_dir(path).map_err(|e| {
-            StageError::Io(format!("failed to read YARA rules directory {}: {e}", path.display()))
+            StageError::Io(format!(
+                "failed to read YARA rules directory {}: {e}",
+                path.display()
+            ))
         })?;
         for entry in entries.flatten() {
             let p = entry.path();
@@ -382,7 +398,10 @@ pub fn load_yara_rules_from_path(path: &Path) -> Result<Vec<YaraRule>, StageErro
         }
         Ok(all_rules)
     } else {
-        Err(StageError::Io(format!("YARA path does not exist: {}", path.display())))
+        Err(StageError::Io(format!(
+            "YARA path does not exist: {}",
+            path.display()
+        )))
     }
 }
 

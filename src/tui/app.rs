@@ -519,7 +519,8 @@ impl App {
                     }
                 };
 
-                dev_size = crate::disk::snapshot::get_device_or_file_size(&test_file, &ctx.target_path);
+                dev_size =
+                    crate::disk::snapshot::get_device_or_file_size(&test_file, &ctx.target_path);
 
                 if dev_size == 0 {
                     let _ = tx.send(ScanEvent::ScanFailed(format!(
@@ -531,8 +532,20 @@ impl App {
             }
 
             let total_pipeline_stages = match mode {
-                ScanMode::Ingress => if is_block_device { 6 } else { 5 },
-                ScanMode::Egress => if is_block_device { 2 } else { 1 },
+                ScanMode::Ingress => {
+                    if is_block_device {
+                        6
+                    } else {
+                        5
+                    }
+                }
+                ScanMode::Egress => {
+                    if is_block_device {
+                        2
+                    } else {
+                        1
+                    }
+                }
             };
 
             if is_block_device {
@@ -552,11 +565,7 @@ impl App {
                     }
                 };
                 let snap_path = snap_dir.join(format!("ferrix-tui-snapshot-{now}.img"));
-                match crate::disk::create_snapshot(
-                    &ctx.target_path,
-                    &snap_path,
-                    &ctx.event_sink,
-                ) {
+                match crate::disk::create_snapshot(&ctx.target_path, &snap_path, &ctx.event_sink) {
                     Ok(s) => {
                         ctx.snapshot_path = Some(s.path);
                         let _ = tx.send(ScanEvent::StageFinished(StageResult {

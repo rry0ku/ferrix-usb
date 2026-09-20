@@ -220,53 +220,41 @@ pub fn generate_evidence_bundle(
         ))
     })?;
 
-    let device_json = serde_json::to_string_pretty(&report.device).map_err(|e| {
-        StageError::Internal(format!("failed to serialize device evidence: {e}"))
-    })?;
-    fs::write(evidence_dir.join("device.json"), device_json).map_err(|e| {
-        StageError::Io(format!("failed to write device.json: {e}"))
-    })?;
+    let device_json = serde_json::to_string_pretty(&report.device)
+        .map_err(|e| StageError::Internal(format!("failed to serialize device evidence: {e}")))?;
+    fs::write(evidence_dir.join("device.json"), device_json)
+        .map_err(|e| StageError::Io(format!("failed to write device.json: {e}")))?;
 
     let partitions_json = serde_json::to_string_pretty(&report.partitions).map_err(|e| {
         StageError::Internal(format!("failed to serialize partitions evidence: {e}"))
     })?;
-    fs::write(evidence_dir.join("partitions.json"), partitions_json).map_err(|e| {
-        StageError::Io(format!("failed to write partitions.json: {e}"))
-    })?;
+    fs::write(evidence_dir.join("partitions.json"), partitions_json)
+        .map_err(|e| StageError::Io(format!("failed to write partitions.json: {e}")))?;
 
-    let files_json = serde_json::to_string_pretty(&manifest.files).map_err(|e| {
-        StageError::Internal(format!("failed to serialize files evidence: {e}"))
-    })?;
-    fs::write(evidence_dir.join("files.json"), files_json).map_err(|e| {
-        StageError::Io(format!("failed to write files.json: {e}"))
-    })?;
+    let files_json = serde_json::to_string_pretty(&manifest.files)
+        .map_err(|e| StageError::Internal(format!("failed to serialize files evidence: {e}")))?;
+    fs::write(evidence_dir.join("files.json"), files_json)
+        .map_err(|e| StageError::Io(format!("failed to write files.json: {e}")))?;
 
-    let findings_json = serde_json::to_string_pretty(&report.findings).map_err(|e| {
-        StageError::Internal(format!("failed to serialize findings evidence: {e}"))
-    })?;
-    fs::write(evidence_dir.join("findings.json"), findings_json).map_err(|e| {
-        StageError::Io(format!("failed to write findings.json: {e}"))
-    })?;
+    let findings_json = serde_json::to_string_pretty(&report.findings)
+        .map_err(|e| StageError::Internal(format!("failed to serialize findings evidence: {e}")))?;
+    fs::write(evidence_dir.join("findings.json"), findings_json)
+        .map_err(|e| StageError::Io(format!("failed to write findings.json: {e}")))?;
 
-    let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| {
-        StageError::Internal(format!("failed to serialize manifest evidence: {e}"))
-    })?;
-    fs::write(evidence_dir.join("manifest.json"), manifest_json).map_err(|e| {
-        StageError::Io(format!("failed to write manifest.json: {e}"))
-    })?;
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| StageError::Internal(format!("failed to serialize manifest evidence: {e}")))?;
+    fs::write(evidence_dir.join("manifest.json"), manifest_json)
+        .map_err(|e| StageError::Io(format!("failed to write manifest.json: {e}")))?;
 
     if let Some(ref sig) = manifest.signature {
-        fs::write(evidence_dir.join("manifest.sig"), sig).map_err(|e| {
-            StageError::Io(format!("failed to write manifest.sig: {e}"))
-        })?;
+        fs::write(evidence_dir.join("manifest.sig"), sig)
+            .map_err(|e| StageError::Io(format!("failed to write manifest.sig: {e}")))?;
     }
 
-    let report_json = serde_json::to_string_pretty(&report).map_err(|e| {
-        StageError::Internal(format!("failed to serialize forensic report: {e}"))
-    })?;
-    fs::write(evidence_dir.join("report.json"), report_json).map_err(|e| {
-        StageError::Io(format!("failed to write report.json: {e}"))
-    })?;
+    let report_json = serde_json::to_string_pretty(&report)
+        .map_err(|e| StageError::Internal(format!("failed to serialize forensic report: {e}")))?;
+    fs::write(evidence_dir.join("report.json"), report_json)
+        .map_err(|e| StageError::Io(format!("failed to write report.json: {e}")))?;
 
     Ok(())
 }

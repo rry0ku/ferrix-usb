@@ -444,4 +444,3 @@ fn test_executable_disguised_as_mp3_quarantines() {
     let verdict = resolve_verdict(&[stage.id()], &[stage_result], &findings);
     assert_eq!(verdict, Verdict::Quarantine);
 }
-

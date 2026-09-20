@@ -80,9 +80,9 @@ fn scan_via_socket(socket_path: &Path, data: &[u8]) -> Result<Option<String>, St
         .set_write_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| StageError::Io(format!("failed to set clamd write timeout: {e}")))?;
 
-    stream.write_all(b"zINSTREAM\0").map_err(|e| {
-        StageError::Io(format!("failed to write INSTREAM command to clamd: {e}"))
-    })?;
+    stream
+        .write_all(b"zINSTREAM\0")
+        .map_err(|e| StageError::Io(format!("failed to write INSTREAM command to clamd: {e}")))?;
 
     let chunk_size = 64 * 1024;
     let mut offset = 0;
@@ -124,7 +124,9 @@ fn parse_clamd_response(response: &str) -> Result<Option<String>, StageError> {
         };
         Ok(Some(sig.to_string()))
     } else if trimmed.ends_with("ERROR") {
-        Err(StageError::Internal(format!("clamd returned error: {trimmed}")))
+        Err(StageError::Internal(format!(
+            "clamd returned error: {trimmed}"
+        )))
     } else {
         Ok(None)
     }

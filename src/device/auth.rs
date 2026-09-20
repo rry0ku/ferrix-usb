@@ -173,8 +173,14 @@ pub fn is_external_device(device_path: &Path) -> bool {
         return false;
     }
     if device_path.is_file() {
-        let ext = device_path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        return ext == "raw" || ext == "img" || dev_str.ends_with(".raw") || dev_str.ends_with(".img");
+        let ext = device_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        return ext == "raw"
+            || ext == "img"
+            || dev_str.ends_with(".raw")
+            || dev_str.ends_with(".img");
     }
     let dev_name = match device_path.file_name().and_then(|s| s.to_str()) {
         Some(n) => n,
@@ -301,7 +307,9 @@ pub fn mount_external_device(
         mp.to_path_buf()
     } else if let Ok(sudo_user) = std::env::var("SUDO_USER") {
         if !sudo_user.is_empty()
-            && sudo_user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && sudo_user
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
             std::path::PathBuf::from(format!("/media/{sudo_user}/{dev_name}"))
         } else {
@@ -309,7 +317,9 @@ pub fn mount_external_device(
         }
     } else if let Ok(user) = std::env::var("USER") {
         if !user.is_empty()
-            && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && user
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         {
             std::path::PathBuf::from(format!("/media/{user}/{dev_name}"))
         } else {

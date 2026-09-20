@@ -110,7 +110,9 @@ pub fn inspect_ole2_compound_file(
             let lower = entry_name.to_lowercase();
 
             if !policy.office.allow_macros
-                && (lower.contains("vba") || lower.contains("macros") || lower.contains("_vba_project"))
+                && (lower.contains("vba")
+                    || lower.contains("macros")
+                    || lower.contains("_vba_project"))
             {
                 findings.push(Finding {
                     id: "FX-FILE-007".to_string(),
@@ -118,8 +120,11 @@ pub fn inspect_ole2_compound_file(
                     confidence: Confidence::High,
                     stage: "file_scan".to_string(),
                     location: Location::Path(media_path.clone()),
-                    reason: "embedded VBA macro stream detected in legacy OLE2 document".to_string(),
-                    evidence: format!("OLE2 directory entry '{entry_name}' indicates macro payload"),
+                    reason: "embedded VBA macro stream detected in legacy OLE2 document"
+                        .to_string(),
+                    evidence: format!(
+                        "OLE2 directory entry '{entry_name}' indicates macro payload"
+                    ),
                 });
             }
 
@@ -131,7 +136,9 @@ pub fn inspect_ole2_compound_file(
                     stage: "file_scan".to_string(),
                     location: Location::Path(media_path.clone()),
                     reason: "embedded native OLE package/payload detected in document".to_string(),
-                    evidence: format!("OLE2 directory entry '{entry_name}' contains embedded package"),
+                    evidence: format!(
+                        "OLE2 directory entry '{entry_name}' contains embedded package"
+                    ),
                 });
             }
         }

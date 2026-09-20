@@ -176,90 +176,111 @@ pub fn is_os_artifact_path(path: &str) -> bool {
 }
 
 pub fn is_type_allowed(detected: DetectedType, filename: &str, allowed_types: &[String]) -> bool {
-    if allowed_types.is_empty() {
-        return detected.risk_class() != RiskClass::Executable;
-    }
     let lower_filename = filename.to_lowercase();
     let ext = lower_filename.rsplit('.').next().unwrap_or("");
+    let expected_class = crate::scan::magic::expected_risk_class_from_extension(ext);
+    let is_exec =
+        detected.risk_class() == RiskClass::Executable || expected_class == RiskClass::Executable;
+
+    if allowed_types.is_empty() {
+        return !is_exec;
+    }
+
     for allowed in allowed_types {
         let a = allowed.to_lowercase();
-        if (a == "*" || a == "all") && detected.risk_class() != RiskClass::Executable {
+        if (a == "*" || a == "all" || a == "any" || a == "non-executable") && !is_exec {
+            return true;
+        }
+        if a == "document"
+            && !is_exec
+            && (detected.risk_class() == RiskClass::Document
+                || expected_class == RiskClass::Document)
+        {
+            return true;
+        }
+        if a == "image"
+            && !is_exec
+            && (detected.risk_class() == RiskClass::Image || expected_class == RiskClass::Image)
+        {
+            return true;
+        }
+        if a == "audio"
+            && !is_exec
+            && (detected.risk_class() == RiskClass::Audio || expected_class == RiskClass::Audio)
+        {
+            return true;
+        }
+        if a == "video"
+            && !is_exec
+            && (detected.risk_class() == RiskClass::Video || expected_class == RiskClass::Video)
+        {
+            return true;
+        }
+        if a == "media"
+            && !is_exec
+            && (detected.risk_class() == RiskClass::Audio
+                || detected.risk_class() == RiskClass::Video
+                || expected_class == RiskClass::Audio
+                || expected_class == RiskClass::Video)
+        {
+            return true;
+        }
+        if a == "archive"
+            && !is_exec
+            && (detected.risk_class() == RiskClass::Archive || expected_class == RiskClass::Archive)
+        {
+            return true;
+        }
+        if a == "text"
+            && !is_exec
+            && (detected.risk_class() == RiskClass::Text || expected_class == RiskClass::Text)
+        {
+            return true;
+        }
+        if a == "data"
+            && !is_exec
+            && (detected.risk_class() == RiskClass::Data || expected_class == RiskClass::Data)
+        {
             return true;
         }
         match detected {
-            DetectedType::Pdf if a == "pdf" || a == "document" => return true,
+            DetectedType::Pdf if a == "pdf" => return true,
             DetectedType::PlainText => {
                 if a == "txt" || a == "text" {
                     return true;
                 }
-                if (ext == "csv" && a == "csv")
-                    || (ext == "tsv" && a == "tsv")
-                    || (ext == "json" && a == "json")
-                    || (ext == "xml" && a == "xml")
-                    || (ext == "yaml" && a == "yaml")
-                    || (ext == "yml" && a == "yml")
-                    || (ext == "md" && a == "md")
-                    || (ext == "log" && a == "log")
-                    || (ext == "ini" && a == "ini")
-                    || (ext == "conf" && a == "conf")
-                    || (ext == "cfg" && a == "cfg")
-                    || (ext == "html" && a == "html")
-                    || (ext == "htm" && a == "htm")
-                    || (ext == "css" && a == "css")
-                    || (ext == "js" && a == "js")
-                    || (ext == "ts" && a == "ts")
-                    || (ext == "rs" && a == "rs")
-                    || (ext == "py" && a == "py")
-                    || (ext == "c" && a == "c")
-                    || (ext == "cpp" && a == "cpp")
-                    || (ext == "h" && a == "h")
-                    || (ext == "hpp" && a == "hpp")
-                {
+                if !ext.is_empty() && a == ext {
                     return true;
                 }
             }
-            DetectedType::Png if a == "png" || a == "image" => return true,
-            DetectedType::Jpeg if a == "jpg" || a == "jpeg" || a == "image" => return true,
-            DetectedType::Gif if a == "gif" || a == "image" => return true,
-            DetectedType::Bmp if a == "bmp" || a == "image" => return true,
-            DetectedType::Webp if a == "webp" || a == "image" => return true,
-            DetectedType::Svg if a == "svg" || a == "image" => return true,
-            DetectedType::Mp3 if a == "mp3" || a == "audio" || a == "media" => return true,
-            DetectedType::Flac if a == "flac" || a == "audio" || a == "media" => return true,
-            DetectedType::Wav if a == "wav" || a == "audio" || a == "media" => return true,
-            DetectedType::Ogg if a == "ogg" || a == "audio" || a == "media" => return true,
-            DetectedType::Mp4
-                if a == "mp4"
-                    || a == "m4a"
-                    || a == "video"
-                    || a == "audio"
-                    || a == "media" =>
-            {
-                return true
-            }
-            DetectedType::Mkv if a == "mkv" || a == "video" || a == "media" => return true,
-            DetectedType::Avi if a == "avi" || a == "video" || a == "media" => return true,
+            DetectedType::Png if a == "png" => return true,
+            DetectedType::Jpeg if a == "jpg" || a == "jpeg" => return true,
+            DetectedType::Gif if a == "gif" => return true,
+            DetectedType::Bmp if a == "bmp" => return true,
+            DetectedType::Webp if a == "webp" => return true,
+            DetectedType::Svg if a == "svg" => return true,
+            DetectedType::Mp3 if a == "mp3" => return true,
+            DetectedType::Flac if a == "flac" => return true,
+            DetectedType::Wav if a == "wav" => return true,
+            DetectedType::Ogg if a == "ogg" => return true,
+            DetectedType::Mp4 if a == "mp4" || a == "m4a" => return true,
+            DetectedType::Mkv if a == "mkv" || a == "webm" => return true,
+            DetectedType::Avi if a == "avi" => return true,
             DetectedType::ZipOrOffice => {
-                if a == "zip" || a == "archive" {
+                if a == "zip" {
                     return true;
                 }
-                if (ext == "docx" && (a == "docx" || a == "document"))
-                    || (ext == "xlsx" && (a == "xlsx" || a == "document"))
-                    || (ext == "pptx" && (a == "pptx" || a == "document"))
-                    || (ext == "odt" && (a == "odt" || a == "document"))
-                    || (ext == "ods" && (a == "ods" || a == "document"))
-                    || (ext == "odp" && (a == "odp" || a == "document"))
-                {
+                if !ext.is_empty() && a == ext {
                     return true;
                 }
             }
-            DetectedType::SevenZip if a == "7z" || a == "archive" => return true,
-            DetectedType::Gzip if a == "gz" || a == "gzip" || a == "archive" => return true,
-            DetectedType::Tar if a == "tar" || a == "archive" => return true,
-            DetectedType::Bzip2 if a == "bz2" || a == "bzip2" || a == "archive" => return true,
-            DetectedType::Xz if a == "xz" || a == "archive" => return true,
-            DetectedType::Rar if a == "rar" || a == "archive" => return true,
-            DetectedType::Sqlite if a == "sqlite" || a == "db" || a == "data" => return true,
+            DetectedType::SevenZip if a == "7z" => return true,
+            DetectedType::Gzip if a == "gz" || a == "gzip" => return true,
+            DetectedType::Tar if a == "tar" => return true,
+            DetectedType::Bzip2 if a == "bz2" || a == "bzip2" => return true,
+            DetectedType::Xz if a == "xz" => return true,
+            DetectedType::Rar if a == "rar" => return true,
+            DetectedType::Sqlite if a == "sqlite" || a == "db" => return true,
             DetectedType::Pe if a == "exe" || a == "pe" => return true,
             DetectedType::Elf if a == "elf" => return true,
             DetectedType::MachO if a == "macho" => return true,
@@ -271,15 +292,14 @@ pub fn is_type_allowed(detected: DetectedType, filename: &str, allowed_types: &[
                 if a == "unknown" || a == "bin" || a == "raw" {
                     return true;
                 }
-                if !ext.is_empty()
-                    && a == ext
-                    && crate::scan::magic::expected_risk_class_from_extension(ext)
-                        != RiskClass::Executable
-                {
+                if !ext.is_empty() && a == ext && !is_exec {
                     return true;
                 }
             }
             _ => {}
+        }
+        if !ext.is_empty() && a == ext && !is_exec {
+            return true;
         }
     }
     false

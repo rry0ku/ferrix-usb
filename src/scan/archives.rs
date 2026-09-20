@@ -39,7 +39,14 @@ pub fn inspect_zip_archive_with_policy(
     policy: &Policy,
 ) {
     let mut total_uncompressed = 0u64;
-    inspect_archive_recursive(data, media_path, findings, policy, 0, &mut total_uncompressed);
+    inspect_archive_recursive(
+        data,
+        media_path,
+        findings,
+        policy,
+        0,
+        &mut total_uncompressed,
+    );
 }
 
 pub fn inspect_archive_recursive(
@@ -142,12 +149,8 @@ fn inspect_zip_entries(
 
         let mut curr = cd_offset;
         while curr + 46 <= cd_offset + cd_size && curr + 46 <= data.len() {
-            let magic = u32::from_le_bytes([
-                data[curr],
-                data[curr + 1],
-                data[curr + 2],
-                data[curr + 3],
-            ]);
+            let magic =
+                u32::from_le_bytes([data[curr], data[curr + 1], data[curr + 2], data[curr + 3]]);
             if magic != 0x02014B50 {
                 break;
             }
@@ -371,7 +374,11 @@ fn inspect_zip_local_headers(
         .saturating_mul(1024 * 1024);
     let mut curr = 0;
     while curr + 30 <= data.len() {
-        if data[curr] != 0x50 || data[curr + 1] != 0x4B || data[curr + 2] != 0x03 || data[curr + 3] != 0x04 {
+        if data[curr] != 0x50
+            || data[curr + 1] != 0x4B
+            || data[curr + 2] != 0x03
+            || data[curr + 3] != 0x04
+        {
             curr += 1;
             continue;
         }
@@ -406,7 +413,9 @@ fn inspect_zip_local_headers(
                     stage: "file_scan".to_string(),
                     location: Location::Path(media_path.clone()),
                     reason: "archive contains path traversal attempt in local header".to_string(),
-                    evidence: format!("local header entry '{entry_name}' attempts to escape target directory"),
+                    evidence: format!(
+                        "local header entry '{entry_name}' attempts to escape target directory"
+                    ),
                 });
             }
 
@@ -479,11 +488,8 @@ fn inspect_zip_local_headers(
                 };
 
                 if let Some(decomp) = decompressed_opt {
-                    let nested_path = MediaPath::from(format!(
-                        "{}/{}",
-                        media_path.escaped(),
-                        entry_name
-                    ));
+                    let nested_path =
+                        MediaPath::from(format!("{}/{}", media_path.escaped(), entry_name));
                     inspect_archive_recursive(
                         &decomp,
                         &nested_path,
@@ -608,7 +614,9 @@ fn inspect_tar_entries(
         }
 
         let blocks = (file_size.saturating_add(511)) / 512;
-        offset = offset.saturating_add(512).saturating_add((blocks as usize).saturating_mul(512));
+        offset = offset
+            .saturating_add(512)
+            .saturating_add((blocks as usize).saturating_mul(512));
     }
 }
 
@@ -687,7 +695,9 @@ fn inspect_gzip_payload(
     }
 
     let payload = &data[header_size..];
-    if let Ok(decomp) = miniz_oxide::inflate::decompress_to_vec_with_limit(payload, 16 * 1024 * 1024) {
+    if let Ok(decomp) =
+        miniz_oxide::inflate::decompress_to_vec_with_limit(payload, 16 * 1024 * 1024)
+    {
         *cumulative_uncompressed = cumulative_uncompressed.saturating_add(decomp.len() as u64);
         let nested_path = MediaPath::from(format!("{}.decompressed", media_path.escaped()));
         inspect_archive_recursive(
@@ -719,7 +729,10 @@ fn inspect_7z_container(
             stage: "file_scan".to_string(),
             location: Location::Path(media_path.clone()),
             reason: "truncated 7z archive header".to_string(),
-            evidence: format!("7z container length {} is shorter than 32-byte header", data.len()),
+            evidence: format!(
+                "7z container length {} is shorter than 32-byte header",
+                data.len()
+            ),
         });
         return;
     }

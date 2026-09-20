@@ -88,7 +88,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("  •  {hints}"), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("  •  {hints}"),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]))
         .block(Block::default().borders(Borders::ALL))
     } else {
@@ -361,7 +364,10 @@ fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
         app.current_stage_name.clone()
     };
 
-    let gauge_label = format!("{}%{eta_str}{speed_str} - {stage_name}", app.scan_progress_pct);
+    let gauge_label = format!(
+        "{}%{eta_str}{speed_str} - {stage_name}",
+        app.scan_progress_pct
+    );
 
     let gauge = Gauge::default()
         .block(

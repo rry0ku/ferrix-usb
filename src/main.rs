@@ -65,8 +65,7 @@ fn main() -> ExitCode {
                             if dt >= 0.25 {
                                 let speed = (current.saturating_sub(last_bytes) as f64) / dt;
                                 if speed > 1024.0 {
-                                    speed_str =
-                                        format!(" ({:.1} MB/s)", speed / (1024.0 * 1024.0));
+                                    speed_str = format!(" ({:.1} MB/s)", speed / (1024.0 * 1024.0));
                                     if let Some(tot) = total {
                                         let remaining = tot.saturating_sub(current) as f64;
                                         let eta_sec = (remaining / speed) as u64;
@@ -116,7 +115,8 @@ fn main() -> ExitCode {
                     let _ = std::io::stderr().flush();
                 }
             });
-            let (mut policy, warning) = ferrix_usb::policy::load_policy(args.policy.as_deref(), None);
+            let (mut policy, warning) =
+                ferrix_usb::policy::load_policy(args.policy.as_deref(), None);
             if let Some(warn) = warning {
                 eprintln!("{warn}");
             }
@@ -197,7 +197,8 @@ fn main() -> ExitCode {
                 }
             };
 
-            let device_size = ferrix_usb::disk::snapshot::get_device_or_file_size(&test_file, &scan_args.device);
+            let device_size =
+                ferrix_usb::disk::snapshot::get_device_or_file_size(&test_file, &scan_args.device);
             if device_size == 0 {
                 eprintln!(
                     "Error: Target '{}' has 0 bytes (no media inserted or device is empty).",
@@ -416,10 +417,15 @@ fn main() -> ExitCode {
                     let _ = manifest.sign(sk);
                 }
 
-                let usb_dev = ferrix_usb::device::find_usb_device_sysfs_for_block_device(&scan_args.device)
-                    .and_then(|p| ferrix_usb::device::read_usb_device_from_sysfs(&p).ok());
+                let usb_dev =
+                    ferrix_usb::device::find_usb_device_sysfs_for_block_device(&scan_args.device)
+                        .and_then(|p| ferrix_usb::device::read_usb_device_from_sysfs(&p).ok());
 
-                let eff_sec = if scan_args.sector_size == 0 { 512 } else { scan_args.sector_size as u64 };
+                let eff_sec = if scan_args.sector_size == 0 {
+                    512
+                } else {
+                    scan_args.sector_size as u64
+                };
                 let acq_report = ferrix_usb::report::ForensicAcquisitionReport {
                     sha256: String::new(),
                     blake3: device_hash.clone(),
@@ -464,7 +470,10 @@ fn main() -> ExitCode {
                         out_dir,
                     );
                     if !args.json {
-                        println!("Evidence bundle generated at: {}", out_dir.join("evidence").display());
+                        println!(
+                            "Evidence bundle generated at: {}",
+                            out_dir.join("evidence").display()
+                        );
                     }
                 }
 
@@ -683,10 +692,17 @@ fn main() -> ExitCode {
             };
 
             if verify_args.manifest.is_none()
-                && (verify_args.target.extension().map(|e| e == "json").unwrap_or(false)
+                && (verify_args
+                    .target
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
                     || verify_args.target.to_string_lossy().contains("report"))
             {
-                match ferrix_usb::manifest::verify_forensic_report_file(&verify_args.target, &pubkey) {
+                match ferrix_usb::manifest::verify_forensic_report_file(
+                    &verify_args.target,
+                    &pubkey,
+                ) {
                     Ok(true) => {
                         println!(
                             "PASS: report '{}' is validly signed by station public key '{}'",

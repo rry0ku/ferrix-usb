@@ -697,8 +697,7 @@ pub fn cleanup_lingering_station_lockdown() {
         if let Ok(entries) = fs::read_dir(temp_dir) {
             for entry_res in entries.flatten() {
                 let name = entry_res.file_name().to_string_lossy().to_string();
-                if name.starts_with("ferrix-")
-                    && (name.ends_with(".img") || name.ends_with(".raw"))
+                if name.starts_with("ferrix-") && (name.ends_with(".img") || name.ends_with(".raw"))
                 {
                     let _ = fs::remove_file(entry_res.path());
                 }

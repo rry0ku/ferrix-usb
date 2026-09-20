@@ -46,8 +46,14 @@ pub fn inspect_pdf_content_with_policy(
     }
 
     search_patterns.push((b"/URI", "external hyperlink URI action detected in PDF"));
-    search_patterns.push((b"/GoToR", "remote GoTo action detected in PDF (cross-document navigation)"));
-    search_patterns.push((b"/SubmitForm", "form submission action detected in PDF (data exfiltration risk)"));
+    search_patterns.push((
+        b"/GoToR",
+        "remote GoTo action detected in PDF (cross-document navigation)",
+    ));
+    search_patterns.push((
+        b"/SubmitForm",
+        "form submission action detected in PDF (data exfiltration risk)",
+    ));
 
     let mut detected_patterns = HashSet::new();
 
@@ -126,7 +132,10 @@ pub fn inspect_pdf_content_with_policy(
                                 && decomp.windows(pattern.len()).any(|w| w == pattern)
                             {
                                 detected_patterns.insert(pattern);
-                                let sev = if pattern == b"/URI" || pattern == b"/GoToR" || pattern == b"/SubmitForm" {
+                                let sev = if pattern == b"/URI"
+                                    || pattern == b"/GoToR"
+                                    || pattern == b"/SubmitForm"
+                                {
                                     Severity::Low
                                 } else {
                                     Severity::High
@@ -160,7 +169,9 @@ pub fn inspect_pdf_content_with_policy(
                     stage: "file_scan".to_string(),
                     location: Location::Path(media_path.clone()),
                     reason: "unclosed stream in PDF document".to_string(),
-                    evidence: format!("stream at offset 0x{stream_start:x} has no matching endstream keyword"),
+                    evidence: format!(
+                        "stream at offset 0x{stream_start:x} has no matching endstream keyword"
+                    ),
                 });
                 break;
             }

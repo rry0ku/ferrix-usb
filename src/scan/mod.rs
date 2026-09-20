@@ -185,7 +185,16 @@ impl Stage for FileScanStage {
                 let is_archive_type = detected == magic::DetectedType::ZipOrOffice
                     || matches!(
                         ext.as_str(),
-                        "zip" | "docx" | "xlsx" | "pptx" | "jar" | "apk" | "tar" | "gz" | "tgz" | "7z"
+                        "zip"
+                            | "docx"
+                            | "xlsx"
+                            | "pptx"
+                            | "jar"
+                            | "apk"
+                            | "tar"
+                            | "gz"
+                            | "tgz"
+                            | "7z"
                     );
                 let is_pdf_type = detected == magic::DetectedType::Pdf || ext == "pdf";
                 let is_ole2_type = header_buf.starts_with(OLE2_MAGIC);
@@ -260,8 +269,13 @@ impl Stage for FileScanStage {
                 message: Some("carving files from unallocated and raw space".to_string()),
             });
 
-            let sec = if self.sector_size == 0 { 512 } else { self.sector_size as u64 };
-            let layout_res = crate::disk::partition::parse_disk_layout(&mut file, total_bytes, self.sector_size);
+            let sec = if self.sector_size == 0 {
+                512
+            } else {
+                self.sector_size as u64
+            };
+            let layout_res =
+                crate::disk::partition::parse_disk_layout(&mut file, total_bytes, self.sector_size);
 
             let unallocated_ranges: Vec<(u64, u64)> = match layout_res {
                 Ok(ref layout) if !layout.partitions.is_empty() => {
@@ -280,7 +294,8 @@ impl Stage for FileScanStage {
                             ranges.push((p1_end_byte, p2_start_byte - p1_end_byte));
                         }
                     }
-                    let last_end_byte = (sorted.last().unwrap().end_lba.saturating_add(1)).saturating_mul(sec);
+                    let last_end_byte =
+                        (sorted.last().unwrap().end_lba.saturating_add(1)).saturating_mul(sec);
                     if total_bytes > last_end_byte {
                         ranges.push((last_end_byte, total_bytes - last_end_byte));
                     }
@@ -288,7 +303,9 @@ impl Stage for FileScanStage {
                 }
                 _ => {
                     let mut sector0 = vec![0u8; 512];
-                    let has_fs = if file.seek(SeekFrom::Start(0)).is_ok() && file.read_exact(&mut sector0).is_ok() {
+                    let has_fs = if file.seek(SeekFrom::Start(0)).is_ok()
+                        && file.read_exact(&mut sector0).is_ok()
+                    {
                         crate::fs::fat::parse_fat_boot_sector(&sector0).is_ok()
                             || crate::fs::exfat::parse_exfat_boot_sector(&sector0).is_ok()
                             || crate::fs::ntfs::parse_ntfs_boot_sector(&sector0).is_ok()

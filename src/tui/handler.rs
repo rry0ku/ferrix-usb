@@ -96,7 +96,8 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                     }
                     KeyCode::Enter if !app.devices.is_empty() => {
                         if let Some(dev) = app.selected_device() {
-                            if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/") {
+                            if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/")
+                            {
                                 app.status_message = Some(format!(
                                     "Cannot scan '{}': No media inserted (0 bytes). Insert media or select another device.",
                                     dev.name

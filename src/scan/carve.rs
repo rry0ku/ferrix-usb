@@ -21,7 +21,11 @@ pub fn carve_files_from_reader<R: Read + Seek>(
         return Ok(Vec::new());
     }
 
-    let eff_sector = if sector_size == 0 { 512 } else { sector_size as u64 };
+    let eff_sector = if sector_size == 0 {
+        512
+    } else {
+        sector_size as u64
+    };
     let mut carved = Vec::new();
     let mut current_offset = start_offset;
     let end_offset = start_offset.saturating_add(length);
@@ -34,9 +38,9 @@ pub fn carve_files_from_reader<R: Read + Seek>(
         }
 
         let to_read = ((end_offset - current_offset) as usize).min(chunk_buf.len());
-        let bytes_read = reader.read(&mut chunk_buf[..to_read]).map_err(|e| {
-            StageError::Io(format!("failed to read disk during file carving: {e}"))
-        })?;
+        let bytes_read = reader
+            .read(&mut chunk_buf[..to_read])
+            .map_err(|e| StageError::Io(format!("failed to read disk during file carving: {e}")))?;
 
         if bytes_read == 0 {
             break;
@@ -136,10 +140,8 @@ pub fn detect_carved_header(slice: &[u8]) -> Option<(String, u64, bool)> {
             u32::from_le_bytes([slice[0x3c], slice[0x3d], slice[0x3e], slice[0x3f]]) as usize;
         if (0x40..=0x1000).contains(&pe_offset) && pe_offset + 24 <= slice.len() {
             if &slice[pe_offset..pe_offset + 4] == b"PE\0\0" {
-                let machine =
-                    u16::from_le_bytes([slice[pe_offset + 4], slice[pe_offset + 5]]);
-                let num_sections =
-                    u16::from_le_bytes([slice[pe_offset + 6], slice[pe_offset + 7]]);
+                let machine = u16::from_le_bytes([slice[pe_offset + 4], slice[pe_offset + 5]]);
+                let num_sections = u16::from_le_bytes([slice[pe_offset + 6], slice[pe_offset + 7]]);
                 let is_valid_machine = matches!(
                     machine,
                     0x014c | 0x8664 | 0xaa64 | 0x01c0 | 0x01c4 | 0x0200 | 0x5032 | 0x5064
@@ -191,7 +193,8 @@ fn estimate_elf_size(slice: &[u8]) -> u64 {
         let is_64 = slice[4] == 2;
         if is_64 {
             let shoff = u64::from_le_bytes([
-                slice[40], slice[41], slice[42], slice[43], slice[44], slice[45], slice[46], slice[47],
+                slice[40], slice[41], slice[42], slice[43], slice[44], slice[45], slice[46],
+                slice[47],
             ]);
             let shentsize = u16::from_le_bytes([slice[58], slice[59]]) as u64;
             let shnum = u16::from_le_bytes([slice[60], slice[61]]) as u64;
@@ -241,7 +244,10 @@ fn estimate_pdf_size(slice: &[u8]) -> u64 {
 }
 
 fn estimate_zip_size(slice: &[u8]) -> u64 {
-    if let Some(pos) = slice.windows(4).rposition(|w| w == [0x50, 0x4B, 0x05, 0x06]) {
+    if let Some(pos) = slice
+        .windows(4)
+        .rposition(|w| w == [0x50, 0x4B, 0x05, 0x06])
+    {
         if pos + 22 <= slice.len() {
             let comment_len = u16::from_le_bytes([slice[pos + 20], slice[pos + 21]]) as usize;
             return (pos + 22 + comment_len) as u64;
