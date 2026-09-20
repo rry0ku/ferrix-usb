@@ -156,16 +156,15 @@ fn main() -> ExitCode {
                         .unwrap_or(false)
             };
 
-            if is_block_device {
-                if ferrix_usb::device::is_system_device(&scan_args.device)
-                    || !ferrix_usb::device::is_external_device(&scan_args.device)
-                {
-                    eprintln!(
-                        "SECURITY ERROR: Refusing to inspect '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
-                        scan_args.device.display()
-                    );
-                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
-                }
+            if is_block_device
+                && (ferrix_usb::device::is_system_device(&scan_args.device)
+                    || !ferrix_usb::device::is_external_device(&scan_args.device))
+            {
+                eprintln!(
+                    "SECURITY ERROR: Refusing to inspect '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
+                    scan_args.device.display()
+                );
+                return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
 
             if is_block_device && !nix::unistd::Uid::effective().is_root() {
@@ -594,16 +593,15 @@ fn main() -> ExitCode {
                     })
                     .unwrap_or(false);
 
-            if is_block_device {
-                if ferrix_usb::device::is_system_device(&egress_args.device)
-                    || !ferrix_usb::device::is_external_device(&egress_args.device)
-                {
-                    eprintln!(
-                        "SECURITY ERROR: Refusing to inspect '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
-                        egress_args.device.display()
-                    );
-                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
-                }
+            if is_block_device
+                && (ferrix_usb::device::is_system_device(&egress_args.device)
+                    || !ferrix_usb::device::is_external_device(&egress_args.device))
+            {
+                eprintln!(
+                    "SECURITY ERROR: Refusing to inspect '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
+                    egress_args.device.display()
+                );
+                return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
 
             if is_block_device && !nix::unistd::Uid::effective().is_root() {
@@ -754,16 +752,15 @@ fn main() -> ExitCode {
                     })
                     .unwrap_or(false);
 
-            if is_block_device {
-                if ferrix_usb::device::is_system_device(&verify_args.target)
-                    || !ferrix_usb::device::is_external_device(&verify_args.target)
-                {
-                    eprintln!(
-                        "SECURITY ERROR: Refusing to verify '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
-                        verify_args.target.display()
-                    );
-                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
-                }
+            if is_block_device
+                && (ferrix_usb::device::is_system_device(&verify_args.target)
+                    || !ferrix_usb::device::is_external_device(&verify_args.target))
+            {
+                eprintln!(
+                    "SECURITY ERROR: Refusing to verify '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
+                    verify_args.target.display()
+                );
+                return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
 
             if is_block_device && !nix::unistd::Uid::effective().is_root() {

@@ -268,7 +268,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(bytes: &[u8]) -> Result<Vec<u8>, StageError> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(StageError::Parse("hex string has odd length".to_string()));
     }
     let mut out = Vec::with_capacity(bytes.len() / 2);

@@ -22,7 +22,7 @@ impl YaraStringPattern {
                     slice
                         .iter()
                         .zip(pattern.iter())
-                        .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+                        .all(|(a, b)| a.eq_ignore_ascii_case(b))
                 } else {
                     slice == pattern.as_slice()
                 }
@@ -40,7 +40,7 @@ impl YaraStringPattern {
                         return false;
                     }
                     if *nocase {
-                        if low.to_ascii_lowercase() != b.to_ascii_lowercase() {
+                        if !low.eq_ignore_ascii_case(&b) {
                             return false;
                         }
                     } else if low != b {
@@ -199,10 +199,8 @@ pub fn parse_yara_rules(source: &str) -> Result<Vec<YaraRule>, StageError> {
                             strings.insert(k, v);
                         }
                     }
-                    "condition" => {
-                        if !line.is_empty() {
-                            condition_lines.push(line);
-                        }
+                    "condition" if !line.is_empty() => {
+                        condition_lines.push(line);
                     }
                     _ => {}
                 }

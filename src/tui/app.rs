@@ -337,16 +337,14 @@ impl App {
         }
 
         let is_block = target_path.starts_with("/dev/");
-        if is_block {
-            if crate::device::auth::is_system_device(&target_path)
-                || !crate::device::auth::is_external_device(&target_path)
-            {
-                self.status_message = Some(
-                    "SECURITY ERROR: Refusing to scan host system or non-external drive."
-                        .to_string(),
-                );
-                return;
-            }
+        if is_block
+            && (crate::device::auth::is_system_device(&target_path)
+                || !crate::device::auth::is_external_device(&target_path))
+        {
+            self.status_message = Some(
+                "SECURITY ERROR: Refusing to scan host system or non-external drive.".to_string(),
+            );
+            return;
         }
 
         self.screen = Screen::Scanning;
@@ -480,16 +478,15 @@ impl App {
                     })
                     .unwrap_or(false);
 
-            if is_block_device {
-                if crate::device::auth::is_system_device(&ctx.target_path)
-                    || !crate::device::auth::is_external_device(&ctx.target_path)
-                {
-                    let _ = tx.send(ScanEvent::ScanFailed(
-                        "SECURITY ERROR: Refusing to scan host system or non-external drive."
-                            .to_string(),
-                    ));
-                    return;
-                }
+            if is_block_device
+                && (crate::device::auth::is_system_device(&ctx.target_path)
+                    || !crate::device::auth::is_external_device(&ctx.target_path))
+            {
+                let _ = tx.send(ScanEvent::ScanFailed(
+                    "SECURITY ERROR: Refusing to scan host system or non-external drive."
+                        .to_string(),
+                ));
+                return;
             }
 
             let mut dev_size = 0u64;

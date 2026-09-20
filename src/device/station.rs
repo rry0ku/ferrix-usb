@@ -470,14 +470,12 @@ impl StationProtectionGuard {
         self.saved_authorized_defaults.clear();
 
         if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
-            for entry_res in entries {
-                if let Ok(entry) = entry_res {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("usb") {
-                        let auth_def = entry.path().join("authorized_default");
-                        if auth_def.exists() {
-                            let _ = fs::write(&auth_def, b"1\n");
-                        }
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("usb") {
+                    let auth_def = entry.path().join("authorized_default");
+                    if auth_def.exists() {
+                        let _ = fs::write(&auth_def, b"1\n");
                     }
                 }
             }
@@ -519,17 +517,15 @@ impl StationProtectionGuard {
         }
 
         if let Ok(entries) = fs::read_dir("/sys/block") {
-            for entry_res in entries {
-                if let Ok(entry) = entry_res {
-                    let path = entry.path();
-                    let is_removable = fs::read_to_string(path.join("removable"))
-                        .map(|s| s.trim() == "1")
-                        .unwrap_or(false);
-                    if is_removable {
-                        let ro_file = path.join("ro");
-                        if ro_file.exists() {
-                            let _ = fs::write(&ro_file, b"0\n");
-                        }
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_removable = fs::read_to_string(path.join("removable"))
+                    .map(|s| s.trim() == "1")
+                    .unwrap_or(false);
+                if is_removable {
+                    let ro_file = path.join("ro");
+                    if ro_file.exists() {
+                        let _ = fs::write(&ro_file, b"0\n");
                     }
                 }
             }

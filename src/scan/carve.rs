@@ -138,18 +138,19 @@ pub fn detect_carved_header(slice: &[u8]) -> Option<(String, u64, bool)> {
     if slice.starts_with(b"MZ") && slice.len() >= 0x40 {
         let pe_offset =
             u32::from_le_bytes([slice[0x3c], slice[0x3d], slice[0x3e], slice[0x3f]]) as usize;
-        if (0x40..=0x1000).contains(&pe_offset) && pe_offset + 24 <= slice.len() {
-            if &slice[pe_offset..pe_offset + 4] == b"PE\0\0" {
-                let machine = u16::from_le_bytes([slice[pe_offset + 4], slice[pe_offset + 5]]);
-                let num_sections = u16::from_le_bytes([slice[pe_offset + 6], slice[pe_offset + 7]]);
-                let is_valid_machine = matches!(
-                    machine,
-                    0x014c | 0x8664 | 0xaa64 | 0x01c0 | 0x01c4 | 0x0200 | 0x5032 | 0x5064
-                );
-                if is_valid_machine && num_sections > 0 && num_sections <= 96 {
-                    let size = estimate_pe_size(slice, pe_offset);
-                    return Some(("Windows PE Executable".to_string(), size, true));
-                }
+        if (0x40..=0x1000).contains(&pe_offset)
+            && pe_offset + 24 <= slice.len()
+            && &slice[pe_offset..pe_offset + 4] == b"PE\0\0"
+        {
+            let machine = u16::from_le_bytes([slice[pe_offset + 4], slice[pe_offset + 5]]);
+            let num_sections = u16::from_le_bytes([slice[pe_offset + 6], slice[pe_offset + 7]]);
+            let is_valid_machine = matches!(
+                machine,
+                0x014c | 0x8664 | 0xaa64 | 0x01c0 | 0x01c4 | 0x0200 | 0x5032 | 0x5064
+            );
+            if is_valid_machine && num_sections > 0 && num_sections <= 96 {
+                let size = estimate_pe_size(slice, pe_offset);
+                return Some(("Windows PE Executable".to_string(), size, true));
             }
         }
     }

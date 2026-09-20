@@ -266,7 +266,7 @@ pub fn expected_risk_class_from_extension(ext: &str) -> RiskClass {
         "mp3" | "flac" | "wav" | "ogg" | "m4a" | "aac" | "wma" | "opus" | "mid" | "midi"
         | "alac" | "aiff" | "ape" | "ac3" | "dts" | "amr" | "mka" => RiskClass::Audio,
         "mp4" | "mkv" | "avi" | "mov" | "webm" | "wmv" | "flv" | "m4v" | "3gp" | "3g2" | "mpg"
-        | "mpeg" | "ts" | "vob" | "ogv" => RiskClass::Video,
+        | "mpeg" | "m2ts" | "mts" | "vob" | "ogv" => RiskClass::Video,
         "txt" | "csv" | "tsv" | "log" | "json" | "xml" | "yaml" | "yml" | "md" | "markdown"
         | "ini" | "conf" | "cfg" | "toml" | "properties" | "html" | "htm" | "css" | "scss"
         | "sass" | "less" | "js" | "jsx" | "ts" | "tsx" | "rs" | "py" | "c" | "cpp" | "cxx"

@@ -638,11 +638,9 @@ fn inspect_gzip_payload(
     let flags = data[3];
     let mut header_size = 10usize;
 
-    if (flags & 0x04) != 0 {
-        if header_size + 2 <= data.len() {
-            let xlen = u16::from_le_bytes([data[header_size], data[header_size + 1]]) as usize;
-            header_size += 2 + xlen;
-        }
+    if (flags & 0x04) != 0 && header_size + 2 <= data.len() {
+        let xlen = u16::from_le_bytes([data[header_size], data[header_size + 1]]) as usize;
+        header_size += 2 + xlen;
     }
     if (flags & 0x08) != 0 {
         while header_size < data.len() && data[header_size] != 0 {
