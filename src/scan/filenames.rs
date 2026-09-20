@@ -1,4 +1,5 @@
 use crate::core::{Confidence, Finding, Location, MediaPath, Severity};
+use crate::policy::{is_os_artifact_path, Policy};
 
 pub fn is_bidi_override(c: char) -> bool {
     matches!(
@@ -15,6 +16,15 @@ pub fn check_filename_anomalies(
     filename: &str,
     media_path: &MediaPath,
     findings: &mut Vec<Finding>,
+) {
+    check_filename_anomalies_with_policy(filename, media_path, findings, &Policy::strict_default())
+}
+
+pub fn check_filename_anomalies_with_policy(
+    filename: &str,
+    media_path: &MediaPath,
+    findings: &mut Vec<Finding>,
+    policy: &Policy,
 ) {
     if filename.chars().any(is_bidi_override) {
         findings.push(Finding {
@@ -40,32 +50,46 @@ pub fn check_filename_anomalies(
         });
     }
 
-    let parts: Vec<&str> = filename.split('.').collect();
-    if parts.len() >= 3 {
-        let ext = parts[parts.len() - 1].to_lowercase();
-        let deceptive_ext = parts[parts.len() - 2].to_lowercase();
+    if !policy.filenames.allow_unicode && !filename.is_ascii() {
+        findings.push(Finding {
+            id: "FX-FILE-004".to_string(),
+            severity: Severity::Medium,
+            confidence: Confidence::High,
+            stage: "file_scan".to_string(),
+            location: Location::Path(media_path.clone()),
+            reason: "non-ASCII characters detected in filename disallowed by policy".to_string(),
+            evidence: format!("filename '{filename}' contains non-ASCII Unicode characters"),
+        });
+    }
 
-        let is_exec_ext = matches!(
-            ext.as_str(),
-            "exe" | "scr" | "bat" | "cmd" | "vbs" | "js" | "pif" | "com" | "ps1" | "sh"
-        );
-        let is_deceptive_ext = matches!(
-            deceptive_ext.as_str(),
-            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "jpg" | "jpeg" | "png" | "txt"
-        );
+    if policy.filenames.check_double_extensions {
+        let parts: Vec<&str> = filename.split('.').collect();
+        if parts.len() >= 3 {
+            let ext = parts[parts.len() - 1].to_lowercase();
+            let deceptive_ext = parts[parts.len() - 2].to_lowercase();
 
-        if is_exec_ext && is_deceptive_ext {
-            findings.push(Finding {
-                id: "FX-FILE-004".to_string(),
-                severity: Severity::High,
-                confidence: Confidence::High,
-                stage: "file_scan".to_string(),
-                location: Location::Path(media_path.clone()),
-                reason: "dangerous double extension detected".to_string(),
-                evidence: format!(
-                    "file '{filename}' disguises executable (.{ext}) behind deceptive extension (.{deceptive_ext})"
-                ),
-            });
+            let is_exec_ext = matches!(
+                ext.as_str(),
+                "exe" | "scr" | "bat" | "cmd" | "vbs" | "js" | "pif" | "com" | "ps1" | "sh"
+            );
+            let is_deceptive_ext = matches!(
+                deceptive_ext.as_str(),
+                "pdf" | "doc" | "docx" | "xls" | "xlsx" | "jpg" | "jpeg" | "png" | "txt"
+            );
+
+            if is_exec_ext && is_deceptive_ext {
+                findings.push(Finding {
+                    id: "FX-FILE-004".to_string(),
+                    severity: Severity::High,
+                    confidence: Confidence::High,
+                    stage: "file_scan".to_string(),
+                    location: Location::Path(media_path.clone()),
+                    reason: "dangerous double extension detected".to_string(),
+                    evidence: format!(
+                        "file '{filename}' disguises executable (.{ext}) behind deceptive extension (.{deceptive_ext})"
+                    ),
+                });
+            }
         }
     }
 
@@ -110,10 +134,32 @@ pub fn check_hidden_file(
     media_path: &MediaPath,
     findings: &mut Vec<Finding>,
 ) {
+    check_hidden_file_with_policy(
+        filename,
+        is_hidden_attr,
+        is_executable_content,
+        media_path,
+        findings,
+        &Policy::strict_default(),
+    )
+}
+
+pub fn check_hidden_file_with_policy(
+    filename: &str,
+    is_hidden_attr: bool,
+    is_executable_content: bool,
+    media_path: &MediaPath,
+    findings: &mut Vec<Finding>,
+    policy: &Policy,
+) {
     let is_dotfile = filename.starts_with('.') && filename != "." && filename != "..";
     let is_hidden = is_dotfile || is_hidden_attr;
 
     if !is_hidden {
+        return;
+    }
+
+    if policy.allow_os_artifacts && is_os_artifact_path(filename) && !is_executable_content {
         return;
     }
 

@@ -109,7 +109,7 @@ fn main() -> ExitCode {
             let device_stage = ferrix_usb::device::DeviceScanStage::new(policy.clone());
             let partition_stage = ferrix_usb::disk::PartitionScanStage::default();
             let fs_stage = ferrix_usb::fs::FilesystemScanStage::default();
-            let file_stage = ferrix_usb::scan::FileScanStage::default();
+            let file_stage = ferrix_usb::scan::FileScanStage::default().with_policy(policy.clone());
             let policy_stage = ferrix_usb::policy::PolicyScanStage::new(policy.clone());
 
             let mut completed_stages = Vec::new();
@@ -147,10 +147,11 @@ fn main() -> ExitCode {
                 file_stage.id(),
                 policy_stage.id(),
             ];
-            let verdict = ferrix_usb::core::resolve_verdict(
+            let verdict = ferrix_usb::policy::resolve_verdict_with_policy(
                 &required_stages,
                 &completed_stages,
                 &all_findings,
+                &policy,
             );
 
             let scan_id = format!(

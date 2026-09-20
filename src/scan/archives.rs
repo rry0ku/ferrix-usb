@@ -1,4 +1,5 @@
 use crate::core::{Confidence, Finding, Location, MediaPath, Severity};
+use crate::policy::Policy;
 
 fn find_eocd(data: &[u8]) -> Option<usize> {
     if data.len() < 22 {
@@ -28,7 +29,20 @@ fn is_path_traversal_entry(name: &str) -> bool {
 }
 
 pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut Vec<Finding>) {
+    inspect_zip_archive_with_policy(data, media_path, findings, &Policy::strict_default())
+}
+
+pub fn inspect_zip_archive_with_policy(
+    data: &[u8],
+    media_path: &MediaPath,
+    findings: &mut Vec<Finding>,
+    policy: &Policy,
+) {
     let mut total_uncompressed_bytes = 0u64;
+    let max_uncompressed_limit = policy
+        .archives
+        .max_uncompressed_size_mb
+        .saturating_mul(1024 * 1024);
 
     if let Some(eocd_idx) = find_eocd(data) {
         let cd_size = u32::from_le_bytes([
@@ -121,9 +135,10 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                     }
 
                     let lower = entry_name.to_lowercase();
-                    if lower.contains("vbaproject.bin")
-                        || lower.contains("vba/")
-                        || lower.contains("macros")
+                    if !policy.office.allow_macros
+                        && (lower.contains("vbaproject.bin")
+                            || lower.contains("vba/")
+                            || lower.contains("macros"))
                     {
                         findings.push(Finding {
                             id: "FX-FILE-007".to_string(),
@@ -139,7 +154,10 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                     }
 
                     let host_os = version_made_by >> 8;
-                    if host_os == 3 && ((external_attr >> 16) & 0xF000) == 0xA000 {
+                    if !policy.archives.allow_symlinks
+                        && host_os == 3
+                        && ((external_attr >> 16) & 0xF000) == 0xA000
+                    {
                         findings.push(Finding {
                             id: "FX-FILE-006".to_string(),
                             severity: Severity::High,
@@ -191,7 +209,7 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                 }
 
                 if comp_size > 0
-                    && uncomp_size > (comp_size.saturating_mul(100))
+                    && uncomp_size > (comp_size.saturating_mul(policy.archives.max_expansion_ratio))
                     && uncomp_size > (10 * 1024 * 1024)
                 {
                     findings.push(Finding {
@@ -202,13 +220,14 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                         location: Location::Path(media_path.clone()),
                         reason: "abnormal compression expansion ratio (zip bomb)".to_string(),
                         evidence: format!(
-                            "entry expands from {comp_size} bytes to {uncomp_size} bytes (ratio > 100:1)"
+                            "entry expands from {comp_size} bytes to {uncomp_size} bytes (ratio > {}:1)",
+                            policy.archives.max_expansion_ratio
                         ),
                     });
                 }
 
                 total_uncompressed_bytes = total_uncompressed_bytes.saturating_add(uncomp_size);
-                if total_uncompressed_bytes > (1024 * 1024 * 1024) {
+                if total_uncompressed_bytes > max_uncompressed_limit {
                     findings.push(Finding {
                         id: "FX-FILE-006".to_string(),
                         severity: Severity::High,
@@ -216,7 +235,10 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                         stage: "file_scan".to_string(),
                         location: Location::Path(media_path.clone()),
                         reason: "archive uncompressed size exceeds safe limit".to_string(),
-                        evidence: "total uncompressed archive size exceeds 1 GB".to_string(),
+                        evidence: format!(
+                            "total uncompressed archive size exceeds {} MB limit",
+                            policy.archives.max_uncompressed_size_mb
+                        ),
                     });
                     break;
                 }
@@ -278,9 +300,10 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                     }
 
                     let lower = entry_name.to_lowercase();
-                    if lower.contains("vbaproject.bin")
-                        || lower.contains("vba/")
-                        || lower.contains("macros")
+                    if !policy.office.allow_macros
+                        && (lower.contains("vbaproject.bin")
+                            || lower.contains("vba/")
+                            || lower.contains("macros"))
                     {
                         findings.push(Finding {
                             id: "FX-FILE-007".to_string(),
@@ -297,7 +320,7 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                 }
 
                 if comp_size > 0
-                    && uncomp_size > (comp_size.saturating_mul(100))
+                    && uncomp_size > (comp_size.saturating_mul(policy.archives.max_expansion_ratio))
                     && uncomp_size > (10 * 1024 * 1024)
                 {
                     findings.push(Finding {
@@ -308,13 +331,14 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                         location: Location::Path(media_path.clone()),
                         reason: "abnormal compression expansion ratio (zip bomb)".to_string(),
                         evidence: format!(
-                            "entry expands from {comp_size} bytes to {uncomp_size} bytes (ratio > 100:1)"
+                            "entry expands from {comp_size} bytes to {uncomp_size} bytes (ratio > {}:1)",
+                            policy.archives.max_expansion_ratio
                         ),
                     });
                 }
 
                 total_uncompressed_bytes = total_uncompressed_bytes.saturating_add(uncomp_size);
-                if total_uncompressed_bytes > (1024 * 1024 * 1024) {
+                if total_uncompressed_bytes > max_uncompressed_limit {
                     findings.push(Finding {
                         id: "FX-FILE-006".to_string(),
                         severity: Severity::High,
@@ -322,7 +346,10 @@ pub fn inspect_zip_archive(data: &[u8], media_path: &MediaPath, findings: &mut V
                         stage: "file_scan".to_string(),
                         location: Location::Path(media_path.clone()),
                         reason: "archive uncompressed size exceeds safe limit".to_string(),
-                        evidence: "total uncompressed archive size exceeds 1 GB".to_string(),
+                        evidence: format!(
+                            "total uncompressed archive size exceeds {} MB limit",
+                            policy.archives.max_uncompressed_size_mb
+                        ),
                     });
                     break;
                 }

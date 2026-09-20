@@ -60,8 +60,14 @@ pub fn check_device_anomalies(device: &UsbDevice, policy: &Policy) -> Vec<Findin
 
     if !policy.allowed_devices.is_empty() {
         let is_allowed = policy.allowed_devices.iter().any(|d| {
-            d.vendor.eq_ignore_ascii_case(&device.vendor_id)
-                && d.product.eq_ignore_ascii_case(&device.product_id)
+            let vendor_match = d.vendor.eq_ignore_ascii_case(&device.vendor_id);
+            let product_match = d.product.eq_ignore_ascii_case(&device.product_id);
+            let serial_match = match (&d.serial, &device.serial) {
+                (Some(expected), Some(actual)) => expected.eq_ignore_ascii_case(actual),
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
+            vendor_match && product_match && serial_match
         });
 
         if !is_allowed {
@@ -73,8 +79,8 @@ pub fn check_device_anomalies(device: &UsbDevice, policy: &Policy) -> Vec<Findin
                 location: Location::Device,
                 reason: "USB device not permitted by policy".to_string(),
                 evidence: format!(
-                    "device vendor='{}' product='{}' is not in allowed_devices",
-                    device.vendor_id, device.product_id
+                    "device vendor='{}' product='{}' serial='{:?}' is not in allowed_devices",
+                    device.vendor_id, device.product_id, device.serial
                 ),
             });
         }

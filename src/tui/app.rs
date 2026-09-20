@@ -427,7 +427,8 @@ impl App {
                     let device_stage = crate::device::DeviceScanStage::new(policy.clone());
                     let partition_stage = crate::disk::PartitionScanStage::default();
                     let fs_stage = crate::fs::FilesystemScanStage::default();
-                    let file_stage = crate::scan::FileScanStage::default();
+                    let file_stage =
+                        crate::scan::FileScanStage::default().with_policy(policy.clone());
                     let policy_stage = crate::policy::PolicyScanStage::new(policy.clone());
 
                     let stages: [&dyn Stage; 5] = [
@@ -491,7 +492,9 @@ impl App {
                         file_stage.id(),
                         policy_stage.id(),
                     ];
-                    let verdict = crate::core::resolve_verdict(&required, &completed, &findings);
+                    let verdict = crate::policy::resolve_verdict_with_policy(
+                        &required, &completed, &findings, &policy,
+                    );
 
                     let _ = tx.send(ScanEvent::ScanFinished {
                         verdict,

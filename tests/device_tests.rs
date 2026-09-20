@@ -109,6 +109,7 @@ fn test_device_policy_allowlist() {
     policy.allowed_devices = vec![DeviceFilter {
         vendor: "0781".to_string(),
         product: "5581".to_string(),
+        serial: None,
     }];
 
     let findings = check_device_anomalies(&dev, &policy);

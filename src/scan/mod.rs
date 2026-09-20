@@ -10,12 +10,14 @@ pub use pdf::*;
 
 use crate::core::{Finding, ScanContext, Stage, StageError};
 use crate::fs::extract_filesystem_files;
+use crate::policy::Policy;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 pub struct FileScanStage {
     pub sector_size: u32,
     pub max_file_read_size: usize,
+    pub policy: Policy,
 }
 
 impl Default for FileScanStage {
@@ -23,6 +25,7 @@ impl Default for FileScanStage {
         Self {
             sector_size: 512,
             max_file_read_size: 32 * 1024 * 1024,
+            policy: Policy::strict_default(),
         }
     }
 }
@@ -32,7 +35,13 @@ impl FileScanStage {
         Self {
             sector_size,
             max_file_read_size: 32 * 1024 * 1024,
+            policy: Policy::strict_default(),
         }
+    }
+
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
     }
 }
 
@@ -76,7 +85,12 @@ impl Stage for FileScanStage {
                 message: Some(format!("scanning: {filename}")),
             });
 
-            check_filename_anomalies(&filename, &entry.path, &mut findings);
+            check_filename_anomalies_with_policy(
+                &filename,
+                &entry.path,
+                &mut findings,
+                &self.policy,
+            );
 
             let mut header_buf = vec![0u8; 4096.min(entry.size as usize)];
             let has_content = if let Some(offset) = entry.data_offset {
@@ -97,15 +111,52 @@ impl Stage for FileScanStage {
 
             let is_exec = detected.risk_class() == magic::RiskClass::Executable;
             let is_hidden_attr = (entry.attributes & 0x02) != 0;
-            check_hidden_file(
+            check_hidden_file_with_policy(
                 &filename,
                 is_hidden_attr,
                 is_exec,
                 &entry.path,
                 &mut findings,
+                &self.policy,
             );
 
-            if has_content {
+            let is_known_good = if !self.policy.known_good_hashes.is_empty() && entry.size > 0 {
+                if let Some(offset) = entry.data_offset {
+                    if file.seek(SeekFrom::Start(offset)).is_ok() {
+                        let mut hasher = blake3::Hasher::new();
+                        let mut remaining = entry.size;
+                        let mut chunk = vec![0u8; 64 * 1024];
+                        let mut ok = true;
+                        while remaining > 0 {
+                            let to_read = (remaining as usize).min(chunk.len());
+                            if file.read_exact(&mut chunk[..to_read]).is_ok() {
+                                hasher.update(&chunk[..to_read]);
+                                remaining -= to_read as u64;
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if ok {
+                            let hash_hex = hasher.finalize().to_hex().to_string();
+                            self.policy
+                                .known_good_hashes
+                                .iter()
+                                .any(|h| h.eq_ignore_ascii_case(&hash_hex))
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if has_content && !is_known_good {
                 check_extension_content_mismatch(
                     &filename,
                     &header_buf,
@@ -128,10 +179,20 @@ impl Stage for FileScanStage {
                             let mut full_buf = vec![0u8; read_len];
                             if file.read_exact(&mut full_buf).is_ok() {
                                 if is_archive_type {
-                                    inspect_zip_archive(&full_buf, &entry.path, &mut findings);
+                                    inspect_zip_archive_with_policy(
+                                        &full_buf,
+                                        &entry.path,
+                                        &mut findings,
+                                        &self.policy,
+                                    );
                                 }
                                 if is_pdf_type {
-                                    inspect_pdf_content(&full_buf, &entry.path, &mut findings);
+                                    inspect_pdf_content_with_policy(
+                                        &full_buf,
+                                        &entry.path,
+                                        &mut findings,
+                                        &self.policy,
+                                    );
                                 }
                             }
                         }

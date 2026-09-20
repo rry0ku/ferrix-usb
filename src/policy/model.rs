@@ -12,12 +12,16 @@ pub enum VerdictAction {
 pub struct DeviceFilter {
     pub vendor: String,
     pub product: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchivePolicy {
     pub max_depth: usize,
     pub max_expansion_ratio: u64,
+    pub allow_symlinks: bool,
+    pub max_uncompressed_size_mb: u64,
 }
 
 impl Default for ArchivePolicy {
@@ -25,6 +29,52 @@ impl Default for ArchivePolicy {
         Self {
             max_depth: 3,
             max_expansion_ratio: 100,
+            allow_symlinks: false,
+            max_uncompressed_size_mb: 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfficePolicy {
+    pub allow_macros: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PdfPolicy {
+    pub allow_javascript: bool,
+    pub allow_launch_actions: bool,
+    pub allow_embedded_files: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilenamePolicy {
+    pub allow_unicode: bool,
+    pub check_double_extensions: bool,
+}
+
+impl Default for FilenamePolicy {
+    fn default() -> Self {
+        Self {
+            allow_unicode: true,
+            check_double_extensions: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgressPolicy {
+    pub check_unallocated_remnants: bool,
+    pub check_metadata: bool,
+    pub require_wipe_verification: bool,
+}
+
+impl Default for EgressPolicy {
+    fn default() -> Self {
+        Self {
+            check_unallocated_remnants: true,
+            check_metadata: true,
+            require_wipe_verification: false,
         }
     }
 }
@@ -37,7 +87,14 @@ pub struct Policy {
     pub max_file_size_mb: u64,
     pub allowed_devices: Vec<DeviceFilter>,
     pub allowed_types: Vec<String>,
+    pub allow_os_artifacts: bool,
+    pub known_good_hashes: Vec<String>,
     pub archives: ArchivePolicy,
+    pub office: OfficePolicy,
+    pub pdf: PdfPolicy,
+    pub filenames: FilenamePolicy,
+    pub egress: EgressPolicy,
+    pub on_medium: VerdictAction,
     pub on_high: VerdictAction,
     pub on_critical: VerdictAction,
 }
@@ -57,7 +114,14 @@ impl Policy {
                 "jpg".to_string(),
                 "docx".to_string(),
             ],
+            allow_os_artifacts: true,
+            known_good_hashes: Vec::new(),
             archives: ArchivePolicy::default(),
+            office: OfficePolicy::default(),
+            pdf: PdfPolicy::default(),
+            filenames: FilenamePolicy::default(),
+            egress: EgressPolicy::default(),
+            on_medium: VerdictAction::Pass,
             on_high: VerdictAction::Quarantine,
             on_critical: VerdictAction::Fail,
         }

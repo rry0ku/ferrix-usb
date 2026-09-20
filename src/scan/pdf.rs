@@ -1,25 +1,44 @@
 use crate::core::{Confidence, Finding, Location, MediaPath, Severity};
+use crate::policy::Policy;
 use std::collections::HashSet;
 
 pub fn inspect_pdf_content(data: &[u8], media_path: &MediaPath, findings: &mut Vec<Finding>) {
+    inspect_pdf_content_with_policy(data, media_path, findings, &Policy::strict_default())
+}
+
+pub fn inspect_pdf_content_with_policy(
+    data: &[u8],
+    media_path: &MediaPath,
+    findings: &mut Vec<Finding>,
+    policy: &Policy,
+) {
     if data.len() < 4 || &data[0..4] != b"%PDF" {
         return;
     }
 
-    let search_patterns: &[(&[u8], &str)] = &[
-        (b"/JavaScript", "embedded JavaScript action detected in PDF"),
-        (b"/JS", "embedded JS script detected in PDF"),
-        (
+    let mut search_patterns: Vec<(&[u8], &str)> = Vec::new();
+    if !policy.pdf.allow_javascript {
+        search_patterns.push((b"/JavaScript", "embedded JavaScript action detected in PDF"));
+        search_patterns.push((b"/JS", "embedded JS script detected in PDF"));
+    }
+    if !policy.pdf.allow_launch_actions {
+        search_patterns.push((
             b"/Launch",
             "launch action detected in PDF (can execute commands)",
-        ),
-        (b"/EmbeddedFiles", "embedded files detected in PDF"),
-        (b"/EmbeddedFile", "embedded file stream detected in PDF"),
-    ];
+        ));
+    }
+    if !policy.pdf.allow_embedded_files {
+        search_patterns.push((b"/EmbeddedFiles", "embedded files detected in PDF"));
+        search_patterns.push((b"/EmbeddedFile", "embedded file stream detected in PDF"));
+    }
+
+    if search_patterns.is_empty() {
+        return;
+    }
 
     let mut detected_patterns = HashSet::new();
 
-    for &(pattern, reason) in search_patterns {
+    for &(pattern, reason) in &search_patterns {
         if data.windows(pattern.len()).any(|window| window == pattern) {
             detected_patterns.insert(pattern);
             findings.push(Finding {
@@ -84,7 +103,7 @@ pub fn inspect_pdf_content(data: &[u8], media_path: &MediaPath, findings: &mut V
                     });
 
                     if let Ok(decomp) = decompressed {
-                        for &(pattern, reason) in search_patterns {
+                        for &(pattern, reason) in &search_patterns {
                             if !detected_patterns.contains(pattern)
                                 && decomp.windows(pattern.len()).any(|w| w == pattern)
                             {

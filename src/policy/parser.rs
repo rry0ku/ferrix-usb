@@ -1,5 +1,8 @@
 use crate::core::StageError;
-use crate::policy::model::{ArchivePolicy, DeviceFilter, Policy, VerdictAction};
+use crate::policy::model::{
+    ArchivePolicy, DeviceFilter, EgressPolicy, FilenamePolicy, OfficePolicy, PdfPolicy, Policy,
+    VerdictAction,
+};
 
 pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
     let mut name = None;
@@ -8,7 +11,14 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
     let mut max_file_size_mb = None;
     let mut allowed_devices = Vec::new();
     let mut allowed_types = None;
+    let mut allow_os_artifacts = None;
+    let mut known_good_hashes = None;
     let mut archives = ArchivePolicy::default();
+    let mut office = OfficePolicy::default();
+    let mut pdf = PdfPolicy::default();
+    let mut filenames = FilenamePolicy::default();
+    let mut egress = EgressPolicy::default();
+    let mut on_medium = None;
     let mut on_high = None;
     let mut on_critical = None;
 
@@ -73,7 +83,19 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
                 let list = parse_inline_or_bullet_list(val, &lines, &mut i)?;
                 allowed_types = Some(list);
             }
+            "allow_os_artifacts" => {
+                allow_os_artifacts = Some(parse_bool(val)?);
+                i += 1;
+            }
+            "known_good_hashes" => {
+                let list = parse_inline_or_bullet_list(val, &lines, &mut i)?;
+                known_good_hashes = Some(list);
+            }
             "allowed_devices" => {
+                if val == "[]" {
+                    i += 1;
+                    continue;
+                }
                 i += 1;
                 while i < lines.len() {
                     let next_line = lines[i];
@@ -95,6 +117,7 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
                     if let Some(stripped) = line_content.strip_prefix("- ") {
                         let mut vendor = String::new();
                         let mut product = String::new();
+                        let mut serial = None;
                         let first_pair = stripped.trim();
                         if !first_pair.is_empty() {
                             let (k, v) = parse_pair(first_pair)?;
@@ -102,6 +125,8 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
                                 vendor = v;
                             } else if k == "product" {
                                 product = v;
+                            } else if k == "serial" {
+                                serial = Some(v);
                             } else {
                                 return Err(StageError::Parse(format!("unknown device key '{k}'")));
                             }
@@ -129,13 +154,19 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
                                 vendor = v;
                             } else if k == "product" {
                                 product = v;
+                            } else if k == "serial" {
+                                serial = Some(v);
                             } else {
                                 return Err(StageError::Parse(format!("unknown device key '{k}'")));
                             }
                             i += 1;
                         }
 
-                        allowed_devices.push(DeviceFilter { vendor, product });
+                        allowed_devices.push(DeviceFilter {
+                            vendor,
+                            product,
+                            serial,
+                        });
                     } else {
                         i += 1;
                     }
@@ -171,12 +202,161 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
                                 StageError::Parse(format!("invalid max_expansion_ratio '{v}': {e}"))
                             })?;
                         }
+                        "allow_symlinks" => {
+                            archives.allow_symlinks = parse_bool(&v)?;
+                        }
+                        "max_uncompressed_size_mb" => {
+                            archives.max_uncompressed_size_mb = v.parse::<u64>().map_err(|e| {
+                                StageError::Parse(format!(
+                                    "invalid max_uncompressed_size_mb '{v}': {e}"
+                                ))
+                            })?;
+                        }
                         _ => {
                             return Err(StageError::Parse(format!("unknown archive key '{k}'")));
                         }
                     }
                     i += 1;
                 }
+            }
+            "office" => {
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = if let Some(idx) = next_line.find('#') {
+                        &next_line[..idx]
+                    } else {
+                        next_line
+                    };
+                    if next_trimmed.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    let next_indent = next_trimmed.len() - next_trimmed.trim_start().len();
+                    if next_indent == 0 {
+                        break;
+                    }
+
+                    let (k, v) = parse_pair(next_trimmed.trim())?;
+                    match k.as_str() {
+                        "allow_macros" => {
+                            office.allow_macros = parse_bool(&v)?;
+                        }
+                        _ => {
+                            return Err(StageError::Parse(format!("unknown office key '{k}'")));
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            "pdf" => {
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = if let Some(idx) = next_line.find('#') {
+                        &next_line[..idx]
+                    } else {
+                        next_line
+                    };
+                    if next_trimmed.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    let next_indent = next_trimmed.len() - next_trimmed.trim_start().len();
+                    if next_indent == 0 {
+                        break;
+                    }
+
+                    let (k, v) = parse_pair(next_trimmed.trim())?;
+                    match k.as_str() {
+                        "allow_javascript" => {
+                            pdf.allow_javascript = parse_bool(&v)?;
+                        }
+                        "allow_launch_actions" => {
+                            pdf.allow_launch_actions = parse_bool(&v)?;
+                        }
+                        "allow_embedded_files" => {
+                            pdf.allow_embedded_files = parse_bool(&v)?;
+                        }
+                        _ => {
+                            return Err(StageError::Parse(format!("unknown pdf key '{k}'")));
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            "filenames" => {
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = if let Some(idx) = next_line.find('#') {
+                        &next_line[..idx]
+                    } else {
+                        next_line
+                    };
+                    if next_trimmed.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    let next_indent = next_trimmed.len() - next_trimmed.trim_start().len();
+                    if next_indent == 0 {
+                        break;
+                    }
+
+                    let (k, v) = parse_pair(next_trimmed.trim())?;
+                    match k.as_str() {
+                        "allow_unicode" => {
+                            filenames.allow_unicode = parse_bool(&v)?;
+                        }
+                        "check_double_extensions" => {
+                            filenames.check_double_extensions = parse_bool(&v)?;
+                        }
+                        _ => {
+                            return Err(StageError::Parse(format!("unknown filenames key '{k}'")));
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            "egress" => {
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = if let Some(idx) = next_line.find('#') {
+                        &next_line[..idx]
+                    } else {
+                        next_line
+                    };
+                    if next_trimmed.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    let next_indent = next_trimmed.len() - next_trimmed.trim_start().len();
+                    if next_indent == 0 {
+                        break;
+                    }
+
+                    let (k, v) = parse_pair(next_trimmed.trim())?;
+                    match k.as_str() {
+                        "check_unallocated_remnants" => {
+                            egress.check_unallocated_remnants = parse_bool(&v)?;
+                        }
+                        "check_metadata" => {
+                            egress.check_metadata = parse_bool(&v)?;
+                        }
+                        "require_wipe_verification" => {
+                            egress.require_wipe_verification = parse_bool(&v)?;
+                        }
+                        _ => {
+                            return Err(StageError::Parse(format!("unknown egress key '{k}'")));
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            "on_medium" => {
+                on_medium = Some(parse_action(val)?);
+                i += 1;
             }
             "on_high" => {
                 on_high = Some(parse_action(val)?);
@@ -208,7 +388,14 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
                 "docx".to_string(),
             ]
         }),
+        allow_os_artifacts: allow_os_artifacts.unwrap_or(true),
+        known_good_hashes: known_good_hashes.unwrap_or_default(),
         archives,
+        office,
+        pdf,
+        filenames,
+        egress,
+        on_medium: on_medium.unwrap_or(VerdictAction::Pass),
         on_high: on_high.unwrap_or(VerdictAction::Quarantine),
         on_critical: on_critical.unwrap_or(VerdictAction::Fail),
     })
@@ -226,6 +413,14 @@ fn parse_pair(line: &str) -> Result<(String, String), StageError> {
         .trim_matches('\'')
         .to_string();
     Ok((k, v))
+}
+
+fn parse_bool(val: &str) -> Result<bool, StageError> {
+    match val.to_lowercase().as_str() {
+        "true" | "yes" | "1" => Ok(true),
+        "false" | "no" | "0" => Ok(false),
+        _ => Err(StageError::Parse(format!("invalid boolean value '{val}'"))),
+    }
 }
 
 fn parse_inline_or_bullet_list(

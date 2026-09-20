@@ -308,3 +308,199 @@ on_critical: fail
     let _ = std::fs::remove_file(&sig_path);
     let _ = std::fs::remove_file(&pubkey_path);
 }
+
+#[test]
+fn test_default_config_yaml_parsing() {
+    let yaml_content = std::fs::read_to_string("config.default.yaml").unwrap();
+    let pol = parse_policy_str(&yaml_content).unwrap();
+
+    assert_eq!(pol.name, "default-security-policy");
+    assert_eq!(pol.max_partitions, 2);
+    assert_eq!(pol.max_file_size_mb, 2048);
+    assert_eq!(
+        pol.allowed_filesystems,
+        vec!["fat32".to_string(), "exfat".to_string(), "ntfs".to_string()]
+    );
+    assert_eq!(
+        pol.allowed_types,
+        vec![
+            "pdf".to_string(),
+            "txt".to_string(),
+            "png".to_string(),
+            "jpg".to_string(),
+            "gif".to_string(),
+            "docx".to_string(),
+            "xlsx".to_string(),
+            "pptx".to_string(),
+            "zip".to_string(),
+        ]
+    );
+    assert!(pol.allow_os_artifacts);
+    assert!(pol.allowed_devices.is_empty());
+    assert!(pol.known_good_hashes.is_empty());
+    assert_eq!(pol.archives.max_depth, 3);
+    assert_eq!(pol.archives.max_expansion_ratio, 100);
+    assert!(!pol.archives.allow_symlinks);
+    assert_eq!(pol.archives.max_uncompressed_size_mb, 1024);
+    assert!(!pol.office.allow_macros);
+    assert!(!pol.pdf.allow_javascript);
+    assert!(!pol.pdf.allow_launch_actions);
+    assert!(!pol.pdf.allow_embedded_files);
+    assert!(pol.filenames.allow_unicode);
+    assert!(pol.filenames.check_double_extensions);
+    assert!(pol.egress.check_unallocated_remnants);
+    assert!(pol.egress.check_metadata);
+    assert!(!pol.egress.require_wipe_verification);
+    assert_eq!(pol.on_medium, VerdictAction::Pass);
+    assert_eq!(pol.on_high, VerdictAction::Quarantine);
+    assert_eq!(pol.on_critical, VerdictAction::Fail);
+}
+
+#[test]
+fn test_os_artifacts_avoid_false_positives() {
+    use ferrix_usb::policy::is_os_artifact_path;
+
+    assert!(is_os_artifact_path(
+        "System Volume Information/IndexerVolumeGuid"
+    ));
+    assert!(is_os_artifact_path("$RECYCLE.BIN/S-1-5-21-test"));
+    assert!(is_os_artifact_path(".Trashes/501"));
+    assert!(is_os_artifact_path(".fseventsd/fseventsd-uuid"));
+    assert!(is_os_artifact_path(".DS_Store"));
+    assert!(is_os_artifact_path("lost+found"));
+    assert!(is_os_artifact_path("Desktop.ini"));
+    assert!(is_os_artifact_path("Thumbs.db"));
+    assert!(!is_os_artifact_path("Documents/report.pdf"));
+    assert!(!is_os_artifact_path("payload.exe"));
+
+    let unknown_data = vec![0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+    let img = make_fat32_image(1, 0x0C, "DESKTOP", "INI", &unknown_data);
+    let path = write_temp_file("ferrix_test_os_artifact.img", &img);
+    let ctx = ScanContext::new(path.clone());
+
+    let mut policy = Policy::strict_default();
+    policy.allow_os_artifacts = true;
+    let stage = PolicyScanStage::new(policy);
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.iter().all(|f| f.id != "FX-POL-004"));
+}
+
+#[test]
+fn test_os_artifacts_flags_anomalous_exec() {
+    let elf_payload = b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    let img = make_fat32_image(1, 0x0C, "DESKTOP", "INI", elf_payload);
+    let path = write_temp_file("ferrix_test_os_artifact_malware.img", &img);
+    let ctx = ScanContext::new(path.clone());
+
+    let mut policy = Policy::strict_default();
+    policy.allow_os_artifacts = true;
+    let stage = PolicyScanStage::new(policy);
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.iter().any(|f| f.id == "FX-POL-004"
+        && f.severity == Severity::High
+        && f.reason.contains("OS artifact")));
+}
+
+#[test]
+fn test_known_good_hash_allowlist() {
+    let custom_data = b"Custom internal tool binary payload";
+    let hash = blake3::hash(custom_data).to_hex().to_string();
+
+    let img = make_fat32_image(1, 0x0C, "CUSTOM", "BIN", custom_data);
+    let path = write_temp_file("ferrix_test_known_good.img", &img);
+    let ctx = ScanContext::new(path.clone());
+
+    let mut policy = Policy::strict_default();
+    policy.known_good_hashes = vec![hash];
+    let stage = PolicyScanStage::new(policy);
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.iter().all(|f| f.id != "FX-POL-004"));
+}
+
+#[test]
+fn test_device_filter_with_serial() {
+    use ferrix_usb::device::{
+        check_device_anomalies, UsbDevice, UsbInterface, USB_CLASS_MASS_STORAGE,
+    };
+    use ferrix_usb::policy::DeviceFilter;
+
+    let dev_matching = UsbDevice {
+        vendor_id: "0781".to_string(),
+        product_id: "5581".to_string(),
+        serial: Some("ABC123456".to_string()),
+        manufacturer: Some("SanDisk".to_string()),
+        product_name: Some("Ultra".to_string()),
+        interfaces: vec![UsbInterface {
+            interface_number: 0,
+            interface_class: USB_CLASS_MASS_STORAGE,
+            interface_subclass: 0x06,
+            interface_protocol: 0x50,
+        }],
+        authorized: true,
+        sysfs_path: PathBuf::from("/sys/bus/usb/devices/1-1"),
+    };
+
+    let dev_wrong_serial = UsbDevice {
+        vendor_id: "0781".to_string(),
+        product_id: "5581".to_string(),
+        serial: Some("WRONG_SERIAL".to_string()),
+        manufacturer: Some("SanDisk".to_string()),
+        product_name: Some("Ultra".to_string()),
+        interfaces: vec![UsbInterface {
+            interface_number: 0,
+            interface_class: USB_CLASS_MASS_STORAGE,
+            interface_subclass: 0x06,
+            interface_protocol: 0x50,
+        }],
+        authorized: true,
+        sysfs_path: PathBuf::from("/sys/bus/usb/devices/1-1"),
+    };
+
+    let mut policy = Policy::strict_default();
+    policy.allowed_devices = vec![DeviceFilter {
+        vendor: "0781".to_string(),
+        product: "5581".to_string(),
+        serial: Some("ABC123456".to_string()),
+    }];
+
+    let findings_matching = check_device_anomalies(&dev_matching, &policy);
+    assert!(findings_matching.is_empty());
+
+    let findings_wrong_serial = check_device_anomalies(&dev_wrong_serial, &policy);
+    assert!(findings_wrong_serial.iter().any(|f| f.id == "FX-DEV-003"));
+}
+
+#[test]
+fn test_resolve_verdict_with_policy_actions() {
+    use ferrix_usb::core::{Confidence, Finding, Location, StageResult, StageStatus, Verdict};
+    use ferrix_usb::policy::resolve_verdict_with_policy;
+
+    let mut policy = Policy::strict_default();
+    policy.on_medium = VerdictAction::Quarantine;
+    policy.on_high = VerdictAction::Fail;
+
+    let medium_finding = Finding {
+        id: "FX-FILE-002".to_string(),
+        severity: Severity::Medium,
+        confidence: Confidence::High,
+        stage: "file_scan".to_string(),
+        location: Location::Device,
+        reason: "medium finding".to_string(),
+        evidence: "evidence".to_string(),
+    };
+
+    let stages = vec![StageResult {
+        stage_id: "test".to_string(),
+        status: StageStatus::Ok,
+        findings: vec![medium_finding.clone()],
+    }];
+
+    let verdict = resolve_verdict_with_policy(&["test"], &stages, &[medium_finding], &policy);
+    assert_eq!(verdict, Verdict::Quarantine);
+}

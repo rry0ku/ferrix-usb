@@ -1,0 +1,78 @@
+# ferrix-usb security policy configuration
+# Default-deny, offline USB inspection policy
+
+name: "default-security-policy"
+
+# Allowed filesystems on removable media (e.g. fat32, exfat, ntfs, ext4)
+allowed_filesystems:
+  - fat32
+  - exfat
+  - ntfs
+
+# Maximum number of partitions allowed on the device (default: 2)
+max_partitions: 2
+
+# Maximum allowable single file size in megabytes (default: 2048 MB = 2 GB)
+max_file_size_mb: 2048
+
+# Allowed file content types detected by magic bytes (default-deny)
+# Types: pdf, txt, png, jpg, gif, docx, xlsx, pptx, zip
+allowed_types:
+  - pdf
+  - txt
+  - png
+  - jpg
+  - gif
+  - docx
+  - xlsx
+  - pptx
+  - zip
+
+# Automatically permit standard OS volume metadata directories and files
+# (e.g. "System Volume Information", "$RECYCLE.BIN", ".Trashes", ".fseventsd", "lost+found", ".DS_Store")
+# to prevent false positives while still auditing for anomalous executables.
+allow_os_artifacts: true
+
+# Enterprise device hardware allowlist (empty allows any standard storage device)
+# Filters match USB vendor ID, product ID, and optional device serial number.
+allowed_devices: []
+  # Example:
+  # - vendor: "0781"
+  #   product: "5581"
+  #   serial: "4C530001230925114142"
+
+# Known-good file hashes (BLAKE3 hex) to bypass content heuristics
+known_good_hashes: []
+
+# Archive inspection controls
+archives:
+  max_depth: 3
+  max_expansion_ratio: 100
+  allow_symlinks: false
+  max_uncompressed_size_mb: 1024
+
+# Microsoft Office document inspection controls
+office:
+  allow_macros: false
+
+# PDF document inspection controls
+pdf:
+  allow_javascript: false
+  allow_launch_actions: false
+  allow_embedded_files: false
+
+# Filename anomaly controls
+filenames:
+  allow_unicode: true
+  check_double_extensions: true
+
+# Egress data protection controls
+egress:
+  check_unallocated_remnants: true
+  check_metadata: true
+  require_wipe_verification: false
+
+# Policy action mappings for findings (pass, quarantine, fail)
+on_medium: pass
+on_high: quarantine
+on_critical: fail

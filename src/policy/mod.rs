@@ -6,7 +6,10 @@ pub use model::*;
 pub use parser::*;
 pub use verify::*;
 
-use crate::core::{Confidence, Finding, Location, ScanContext, Severity, Stage, StageError};
+use crate::core::{
+    Confidence, Finding, Location, ScanContext, Severity, Stage, StageError, StageResult,
+    StageStatus, Verdict,
+};
 use crate::disk::partition::parse_disk_layout;
 use crate::fs::{
     extract_filesystem_files, parse_exfat_boot_sector, parse_ext_superblock, parse_fat_boot_sector,
@@ -149,6 +152,29 @@ pub fn is_fs_allowed(fs_name: &str, allowed: &[String]) -> bool {
     false
 }
 
+pub fn is_os_artifact_path(path: &str) -> bool {
+    let clean = path.trim_start_matches('/').trim_start_matches('\\');
+    let segments: Vec<&str> = clean.split(['/', '\\']).collect();
+    for seg in &segments {
+        let s = seg.to_ascii_lowercase();
+        if s == "system volume information"
+            || s == "$recycle.bin"
+            || s == "recycler"
+            || s == ".trashes"
+            || s == ".fseventsd"
+            || s == ".spotlight-v100"
+            || s == ".temporaryitems"
+            || s == ".ds_store"
+            || s == "lost+found"
+            || s == "desktop.ini"
+            || s == "thumbs.db"
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn is_type_allowed(detected: DetectedType, filename: &str, allowed_types: &[String]) -> bool {
     let lower_filename = filename.to_lowercase();
     let ext = lower_filename.rsplit('.').next().unwrap_or("");
@@ -156,7 +182,22 @@ pub fn is_type_allowed(detected: DetectedType, filename: &str, allowed_types: &[
         let a = allowed.to_lowercase();
         match detected {
             DetectedType::Pdf if a == "pdf" => return true,
-            DetectedType::PlainText if a == "txt" || a == "text" => return true,
+            DetectedType::PlainText => {
+                if a == "txt" || a == "text" {
+                    return true;
+                }
+                if (ext == "csv" && a == "csv")
+                    || (ext == "tsv" && a == "tsv")
+                    || (ext == "json" && a == "json")
+                    || (ext == "xml" && a == "xml")
+                    || (ext == "yaml" && a == "yaml")
+                    || (ext == "yml" && a == "yml")
+                    || (ext == "md" && a == "md")
+                    || (ext == "log" && a == "log")
+                {
+                    return true;
+                }
+            }
             DetectedType::Png if a == "png" => return true,
             DetectedType::Jpeg if a == "jpg" || a == "jpeg" => return true,
             DetectedType::Gif if a == "gif" => return true,
@@ -185,6 +226,70 @@ pub fn is_type_allowed(detected: DetectedType, filename: &str, allowed_types: &[
         }
     }
     false
+}
+
+pub fn resolve_verdict_with_policy(
+    required_stages: &[&str],
+    completed_stages: &[StageResult],
+    findings: &[Finding],
+    policy: &Policy,
+) -> Verdict {
+    for required in required_stages {
+        match completed_stages.iter().find(|s| s.stage_id == *required) {
+            Some(res) => {
+                if res.status != StageStatus::Ok {
+                    return match policy.on_high {
+                        VerdictAction::Fail => Verdict::Fail,
+                        VerdictAction::Quarantine => Verdict::Quarantine,
+                        VerdictAction::Pass => Verdict::Pass,
+                    };
+                }
+            }
+            None => {
+                return match policy.on_high {
+                    VerdictAction::Fail => Verdict::Fail,
+                    VerdictAction::Quarantine => Verdict::Quarantine,
+                    VerdictAction::Pass => Verdict::Pass,
+                };
+            }
+        }
+    }
+
+    for stage in completed_stages {
+        if stage.status != StageStatus::Ok {
+            return match policy.on_high {
+                VerdictAction::Fail => Verdict::Fail,
+                VerdictAction::Quarantine => Verdict::Quarantine,
+                VerdictAction::Pass => Verdict::Pass,
+            };
+        }
+    }
+
+    if findings.iter().any(|f| f.severity == Severity::Critical) {
+        return match policy.on_critical {
+            VerdictAction::Fail => Verdict::Fail,
+            VerdictAction::Quarantine => Verdict::Quarantine,
+            VerdictAction::Pass => Verdict::Pass,
+        };
+    }
+
+    if findings.iter().any(|f| f.severity == Severity::High) {
+        return match policy.on_high {
+            VerdictAction::Fail => Verdict::Fail,
+            VerdictAction::Quarantine => Verdict::Quarantine,
+            VerdictAction::Pass => Verdict::Pass,
+        };
+    }
+
+    if findings.iter().any(|f| f.severity == Severity::Medium) {
+        return match policy.on_medium {
+            VerdictAction::Fail => Verdict::Fail,
+            VerdictAction::Quarantine => Verdict::Quarantine,
+            VerdictAction::Pass => Verdict::Pass,
+        };
+    }
+
+    Verdict::Pass
 }
 
 pub struct PolicyScanStage {
@@ -379,7 +484,70 @@ impl Stage for PolicyScanStage {
                 DetectedType::PlainText
             };
 
-            if !is_type_allowed(detected, &filename, &self.policy.allowed_types) {
+            let is_os_artifact = self.policy.allow_os_artifacts && is_os_artifact_path(&filename);
+            let is_anomalous_exec = matches!(
+                detected,
+                DetectedType::Pe
+                    | DetectedType::Elf
+                    | DetectedType::MachO
+                    | DetectedType::ShellScript
+                    | DetectedType::WindowsScript
+            );
+
+            let is_known_good = if !self.policy.known_good_hashes.is_empty() && entry.size > 0 {
+                if let Some(offset) = entry.data_offset {
+                    if file.seek(SeekFrom::Start(offset)).is_ok() {
+                        let mut hasher = blake3::Hasher::new();
+                        let mut remaining = entry.size;
+                        let mut chunk = vec![0u8; 64 * 1024];
+                        let mut ok = true;
+                        while remaining > 0 {
+                            let to_read = (remaining as usize).min(chunk.len());
+                            if file.read_exact(&mut chunk[..to_read]).is_ok() {
+                                hasher.update(&chunk[..to_read]);
+                                remaining -= to_read as u64;
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if ok {
+                            let hash_hex = hasher.finalize().to_hex().to_string();
+                            self.policy
+                                .known_good_hashes
+                                .iter()
+                                .any(|h| h.eq_ignore_ascii_case(&hash_hex))
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if is_os_artifact && is_anomalous_exec {
+                findings.push(Finding {
+                    id: "FX-POL-004".to_string(),
+                    severity: Severity::High,
+                    confidence: Confidence::High,
+                    stage: "policy_scan".to_string(),
+                    location: Location::Path(entry.path.clone()),
+                    reason: "executable or script hidden inside OS artifact directory".to_string(),
+                    evidence: format!(
+                        "OS artifact '{}' contains anomalous executable content of type '{}'",
+                        filename,
+                        detected.name()
+                    ),
+                });
+            } else if !is_os_artifact
+                && !is_known_good
+                && !is_type_allowed(detected, &filename, &self.policy.allowed_types)
+            {
                 findings.push(Finding {
                     id: "FX-POL-004".to_string(),
                     severity: Severity::High,
