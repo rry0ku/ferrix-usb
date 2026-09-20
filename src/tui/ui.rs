@@ -59,7 +59,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             if app.is_entering_manual_device {
                 "[Enter] Confirm Path  [Esc] Cancel  [q] Quit"
             } else {
-                "[Enter] Select Device  [m] Manual Path  [r] Refresh  [q] Quit"
+                "[Enter] Select Device  [m] Manual Path  [u] Unmount Drive  [r] Refresh  [q] Quit"
             }
         }
         Screen::ModeSelect => "[1] Ingress  [2] Egress  [Enter] Start Scan  [Esc] Back  [q] Quit",
@@ -125,8 +125,14 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &App) {
                 format!("{size_mb} MB")
             };
 
+            let mount_tag = if !dev.mount_points.is_empty() {
+                format!(" [MOUNTED at {} - UNSAFE]", dev.mount_points.join(", "))
+            } else {
+                " [Unmounted]".to_string()
+            };
+
             let text = format!(
-                "{marker}{} ({}) - {} {} [serial: {}]",
+                "{marker}{} ({}) - {} {} [serial: {}]{}",
                 dev.name,
                 size_str,
                 dev.vendor,
@@ -135,13 +141,22 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &App) {
                     "none"
                 } else {
                     &dev.serial
-                }
+                },
+                mount_tag
             );
 
             let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                if !dev.mount_points.is_empty() {
+                    Style::default()
+                        .fg(Color::LightRed)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                }
+            } else if !dev.mount_points.is_empty() {
+                Style::default().fg(Color::Red)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -267,7 +282,7 @@ fn draw_mode_select(f: &mut Frame, area: Rect, app: &App) {
 fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(5)])
+        .constraints([Constraint::Length(5), Constraint::Min(8)])
         .split(area);
 
     let max_label_len = chunks[0].width.saturating_sub(10) as usize;
@@ -300,46 +315,123 @@ fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(gauge, chunks[0]);
 
-    let findings_count = app.all_findings.len();
-    let text = vec![
-        Line::from(vec![
-            Span::styled("Current Stage: ", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                &app.current_stage_name,
+    let body_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(chunks[1]);
+
+    let stages = match app.mode {
+        ScanMode::Ingress => vec![
+            (1, "USB Descriptors & BadUSB"),
+            (2, "Partition Table & Layout"),
+            (3, "Filesystem Structure"),
+            (4, "File Content & Evasion"),
+            (5, "Policy Rule Compliance"),
+        ],
+        ScanMode::Egress => vec![(1, "Remnants, Wipe & Metadata")],
+    };
+
+    let mut stage_lines = Vec::new();
+    stage_lines.push(Line::from(Span::styled(
+        "Inspection Pipeline Stages:",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    stage_lines.push(Line::from(""));
+
+    for (idx, name) in &stages {
+        let is_completed = app.completed_stages.len() >= *idx;
+        let is_running = !is_completed && app.current_stage_index == *idx;
+
+        let (icon, style) = if is_completed {
+            (
+                "[✓]",
                 Style::default()
-                    .fg(Color::White)
+                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Stages Completed: ", Style::default().fg(Color::Cyan)),
+            )
+        } else if is_running {
+            (
+                "[▶]",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("[ ]", Style::default().fg(Color::DarkGray))
+        };
+
+        stage_lines.push(Line::from(vec![
+            Span::styled(format!(" {icon} {idx}. "), style),
             Span::styled(
-                format!("{}", app.completed_stages.len()),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Findings Discovered: ", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                format!("{findings_count}"),
-                if findings_count > 0 {
+                *name,
+                if is_running {
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(Color::White)
                         .add_modifier(Modifier::BOLD)
+                } else if is_completed {
+                    Style::default().fg(Color::White)
                 } else {
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(Color::DarkGray)
                 },
             ),
-        ]),
-    ];
+        ]));
+    }
 
-    let p = Paragraph::new(text).block(
+    stage_lines.push(Line::from(""));
+    let findings_count = app.all_findings.len();
+    stage_lines.push(Line::from(vec![
+        Span::styled("Findings Discovered: ", Style::default().fg(Color::Cyan)),
+        Span::styled(
+            format!("{findings_count}"),
+            if findings_count > 0 {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Green)
+            },
+        ),
+    ]));
+
+    let p_stages = Paragraph::new(stage_lines).block(
         Block::default()
-            .title(" Live Monitor ")
+            .title(" Pipeline Status ")
             .borders(Borders::ALL),
     );
-    f.render_widget(p, chunks[1]);
+    f.render_widget(p_stages, body_chunks[0]);
+
+    let log_height = body_chunks[1].height.saturating_sub(2) as usize;
+    let start_idx = app.scan_activity_log.len().saturating_sub(log_height);
+    let log_slice = &app.scan_activity_log[start_idx..];
+
+    let log_lines: Vec<Line> = log_slice
+        .iter()
+        .map(|msg| {
+            if msg.contains("[!]") || msg.contains("Finding") {
+                Line::from(Span::styled(msg, Style::default().fg(Color::Yellow)))
+            } else if msg.contains("[Stage Completed]") || msg.contains("complete") {
+                Line::from(Span::styled(msg, Style::default().fg(Color::Green)))
+            } else if msg.contains("[Stage") {
+                Line::from(Span::styled(
+                    msg,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(msg, Style::default().fg(Color::Gray)))
+            }
+        })
+        .collect();
+
+    let p_log = Paragraph::new(log_lines).block(
+        Block::default()
+            .title(" Live Activity Log ")
+            .borders(Borders::ALL),
+    );
+    f.render_widget(p_log, body_chunks[1]);
 }
 
 fn draw_results(f: &mut Frame, area: Rect, app: &App) {

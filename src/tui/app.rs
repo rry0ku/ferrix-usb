@@ -32,6 +32,7 @@ pub struct DeviceEntry {
     pub model: String,
     pub serial: String,
     pub is_removable: bool,
+    pub mount_points: Vec<String>,
 }
 
 pub enum ScanEvent {
@@ -71,6 +72,7 @@ pub struct App {
     pub current_stage_name: String,
     pub current_stage_index: usize,
     pub total_stages: usize,
+    pub scan_activity_log: Vec<String>,
     pub completed_stages: Vec<StageResult>,
     pub all_findings: Vec<Finding>,
     pub selected_finding_idx: usize,
@@ -103,6 +105,7 @@ impl Default for App {
             current_stage_name: String::new(),
             current_stage_index: 0,
             total_stages: 0,
+            scan_activity_log: Vec::new(),
             completed_stages: Vec::new(),
             all_findings: Vec::new(),
             selected_finding_idx: 0,
@@ -167,6 +170,10 @@ impl App {
                     .unwrap_or_default();
 
                 let dev_path = PathBuf::from(format!("/dev/{name}"));
+                let mount_points = crate::device::auth::check_device_mounts(&dev_path)
+                    .into_iter()
+                    .map(|(_, mp)| mp)
+                    .collect();
 
                 list.push(DeviceEntry {
                     path: dev_path,
@@ -176,6 +183,7 @@ impl App {
                     model,
                     serial,
                     is_removable,
+                    mount_points,
                 });
             }
         }
@@ -200,6 +208,7 @@ impl App {
                             model: "Disk Image".to_string(),
                             serial: String::new(),
                             is_removable: true,
+                            mount_points: Vec::new(),
                         });
                     }
                 }
@@ -250,6 +259,9 @@ impl App {
         self.current_stage_name = "Initializing scan...".to_string();
         self.current_stage_index = 0;
         self.total_stages = 0;
+        self.scan_activity_log.clear();
+        self.scan_activity_log
+            .push(format!("Starting scan on: {}", target_path.display()));
         self.completed_stages.clear();
         self.all_findings.clear();
         self.verdict = None;
@@ -444,7 +456,7 @@ impl App {
             while let Ok(event) = rx.try_recv() {
                 match event {
                     ScanEvent::StageStarted { name, index, total } => {
-                        self.current_stage_name = name;
+                        self.current_stage_name = name.clone();
                         self.current_stage_index = index;
                         self.total_stages = total;
                         if total > 0 && index > 0 {
@@ -453,6 +465,8 @@ impl App {
                         } else {
                             self.scan_progress_pct = 0;
                         }
+                        self.scan_activity_log
+                            .push(format!("[Stage {index}/{total}] Started: {name}"));
                     }
                     ScanEvent::Progress {
                         stage_id: _,
@@ -470,18 +484,31 @@ impl App {
                                 self.scan_progress_pct = (base_pct + frac * stage_slice) as u16;
                             }
                         }
-                        if let Some(msg) = message {
+                        if let Some(ref msg) = message {
                             if let Some(tot) = total {
                                 self.current_stage_name = format!("{msg} ({current}/{tot})");
                             } else {
-                                self.current_stage_name = msg;
+                                self.current_stage_name = msg.clone();
+                            }
+                            self.scan_activity_log.push(format!("  -> {msg}"));
+                            if self.scan_activity_log.len() > 300 {
+                                self.scan_activity_log.drain(0..100);
                             }
                         }
                     }
                     ScanEvent::FindingFound(f) => {
+                        self.scan_activity_log.push(format!(
+                            "  [!] Finding: {} - {} ({:?})",
+                            f.id, f.reason, f.severity
+                        ));
                         self.all_findings.push(f);
                     }
                     ScanEvent::StageFinished(res) => {
+                        self.scan_activity_log.push(format!(
+                            "[Stage Completed] {} ({} finding(s))",
+                            res.stage_id,
+                            res.findings.len()
+                        ));
                         self.completed_stages.push(res);
                         if self.total_stages > 0 && self.current_stage_index > 0 {
                             self.scan_progress_pct =
@@ -495,6 +522,8 @@ impl App {
                         findings,
                         scan_id,
                     } => {
+                        self.scan_activity_log
+                            .push(format!("Scan completed. Final verdict: {verdict:?}"));
                         self.verdict = Some(verdict);
                         self.completed_stages = stages;
                         self.all_findings = findings;
@@ -505,6 +534,7 @@ impl App {
                         self.selected_finding_idx = 0;
                     }
                     ScanEvent::ScanFailed(err) => {
+                        self.scan_activity_log.push(format!("Scan failed: {err}"));
                         self.is_scanning = false;
                         self.status_message = Some(format!("Scan error: {err}"));
                         self.screen = Screen::Results;

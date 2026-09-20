@@ -52,7 +52,25 @@ impl Stage for PartitionScanStage {
             }
         }
 
+        ctx.event_sink.emit(crate::core::ScanEvent::Progress {
+            stage_id: self.id().to_string(),
+            current: 1,
+            total: Some(2),
+            message: Some("Parsing MBR/GPT partition tables...".to_string()),
+        });
+
         let layout = parse_disk_layout(&mut file, total_bytes, self.sector_size)?;
+
+        ctx.event_sink.emit(crate::core::ScanEvent::Progress {
+            stage_id: self.id().to_string(),
+            current: 2,
+            total: Some(2),
+            message: Some(format!(
+                "Found {} partition(s); checking layout anomalies...",
+                layout.partitions.len()
+            )),
+        });
+
         let findings = check_partition_anomalies(&layout, &mut file);
 
         Ok(findings)

@@ -48,6 +48,29 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                             app.selected_device_idx += 1;
                         }
                     }
+                    KeyCode::Char('u') => {
+                        if let Some(dev) = app.selected_device() {
+                            let path = dev.path.clone();
+                            match crate::device::auth::unmount_device_partitions(&path) {
+                                Ok(unmounted) => {
+                                    if unmounted.is_empty() {
+                                        app.status_message =
+                                            Some("Device is not mounted.".to_string());
+                                    } else {
+                                        app.status_message = Some(format!(
+                                            "Successfully unmounted: {}",
+                                            unmounted.join(", ")
+                                        ));
+                                        app.refresh_devices();
+                                    }
+                                }
+                                Err(e) => {
+                                    app.status_message =
+                                        Some(format!("Failed to unmount device: {e}"));
+                                }
+                            }
+                        }
+                    }
                     KeyCode::Enter if !app.devices.is_empty() => {
                         app.screen = Screen::ModeSelect;
                     }

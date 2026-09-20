@@ -81,7 +81,18 @@ impl Stage for FilesystemScanStage {
                 .collect()
         };
 
-        for (part_index, start_lba, total_sectors) in partition_targets {
+        let total_parts = partition_targets.len();
+        for (i, (part_index, start_lba, total_sectors)) in partition_targets.into_iter().enumerate()
+        {
+            ctx.event_sink.emit(crate::core::ScanEvent::Progress {
+                stage_id: self.id().to_string(),
+                current: (i + 1) as u64,
+                total: Some(total_parts as u64),
+                message: Some(format!(
+                    "Inspecting filesystem on partition {part_index}..."
+                )),
+            });
+
             let part_offset = start_lba.saturating_mul(self.sector_size as u64);
 
             if file.seek(SeekFrom::Start(part_offset)).is_err() {

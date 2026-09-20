@@ -238,6 +238,13 @@ impl Stage for PolicyScanStage {
             }
         }
 
+        ctx.event_sink.emit(crate::core::ScanEvent::Progress {
+            stage_id: self.id().to_string(),
+            current: 1,
+            total: Some(3),
+            message: Some("Checking partition counts and filesystem allowlists...".to_string()),
+        });
+
         let layout = parse_disk_layout(&mut file, total_bytes, self.sector_size)?;
         let mut findings = Vec::new();
 
@@ -322,6 +329,13 @@ impl Stage for PolicyScanStage {
                 }
             }
         }
+
+        ctx.event_sink.emit(crate::core::ScanEvent::Progress {
+            stage_id: self.id().to_string(),
+            current: 2,
+            total: Some(3),
+            message: Some("Validating files against type & size policy...".to_string()),
+        });
 
         let discovered_files = extract_filesystem_files(&mut file, total_bytes, self.sector_size)?;
         let max_bytes = self.policy.max_file_size_mb.saturating_mul(1024 * 1024);
