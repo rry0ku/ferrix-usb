@@ -53,6 +53,10 @@ fn main() -> ExitCode {
                         .unwrap_or(false)
             };
 
+            if is_block_device && !nix::unistd::Uid::effective().is_root() {
+                eprintln!("Note: inspecting physical block devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix scan ...'.");
+            }
+
             let temp_snapshot_path = if is_block_device {
                 let snap_path = args
                     .out
@@ -107,8 +111,8 @@ fn main() -> ExitCode {
             let _ = ferrix_usb::sandbox::enter_sandbox(&read_paths, &write_paths);
 
             let device_stage = ferrix_usb::device::DeviceScanStage::new(policy.clone());
-            let partition_stage = ferrix_usb::disk::PartitionScanStage::default();
-            let fs_stage = ferrix_usb::fs::FilesystemScanStage::default();
+            let partition_stage = ferrix_usb::disk::PartitionScanStage::new(scan_args.sector_size);
+            let fs_stage = ferrix_usb::fs::FilesystemScanStage::new(scan_args.sector_size);
             let file_stage = ferrix_usb::scan::FileScanStage::default().with_policy(policy.clone());
             let policy_stage = ferrix_usb::policy::PolicyScanStage::new(policy.clone());
 
@@ -178,7 +182,7 @@ fn main() -> ExitCode {
                         let layout = ferrix_usb::disk::partition::parse_disk_layout(
                             &mut f,
                             device_size_bytes,
-                            512,
+                            scan_args.sector_size,
                         )
                         .ok();
                         let layout_hash =
@@ -186,7 +190,7 @@ fn main() -> ExitCode {
                         let discovered = ferrix_usb::fs::extract_filesystem_files(
                             &mut f,
                             device_size_bytes,
-                            512,
+                            scan_args.sector_size,
                         )
                         .unwrap_or_default();
                         let file_entries =
@@ -285,7 +289,7 @@ fn main() -> ExitCode {
                     match ferrix_usb::release::release_snapshot_files(
                         snap_to_release,
                         &dest_dir,
-                        512,
+                        scan_args.sector_size,
                     ) {
                         Ok(rel_report) => {
                             if !args.json {
@@ -332,6 +336,10 @@ fn main() -> ExitCode {
                     egress_args.device.display()
                 );
                 return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+            }
+
+            if egress_args.device.starts_with("/dev/") && !nix::unistd::Uid::effective().is_root() {
+                eprintln!("Note: inspecting physical block devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix egress ...'.");
             }
 
             let ctx = ferrix_usb::core::ScanContext::new(egress_args.device.clone());
@@ -399,6 +407,10 @@ fn main() -> ExitCode {
                 return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
 
+            if verify_args.device.starts_with("/dev/") && !nix::unistd::Uid::effective().is_root() {
+                eprintln!("Note: verifying physical block devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix verify ...'.");
+            }
+
             let manifest_data = match std::fs::read(&verify_args.manifest) {
                 Ok(data) => data,
                 Err(e) => {
@@ -416,10 +428,15 @@ fn main() -> ExitCode {
             };
 
             let pubkey_path = verify_args
-                .manifest
-                .parent()
-                .map(|p| p.join("station.pub"))
-                .filter(|p| p.exists())
+                .pubkey
+                .clone()
+                .or_else(|| {
+                    verify_args
+                        .manifest
+                        .parent()
+                        .map(|p| p.join("station.pub"))
+                        .filter(|p| p.exists())
+                })
                 .unwrap_or_else(|| PathBuf::from("station.pub"));
 
             let pubkey = match load_station_verifying_key(&pubkey_path) {
@@ -715,6 +732,10 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_PASS as u8)
         }
         Some(Commands::Watch(watch_args)) => {
+            if !nix::unistd::Uid::effective().is_root() {
+                eprintln!("Warning: USB authorization management in watch mode requires root privileges. Please re-run with 'sudo ferrix watch'.");
+            }
+
             println!(
                 "Starting ferrix offline hotplug watch mode (polling interval: {}s)...",
                 watch_args.interval
