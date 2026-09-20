@@ -1,6 +1,8 @@
-# ferrix-usb
-
 <div align="center">
+
+<img src="docs/ferrix.png" alt="ferrix-usb logo" width="160" />
+
+# ferrix-usb
 
 [![Platform](https://img.shields.io/badge/platform-Linux-0078D4?logo=linux&logoColor=white&style=flat-square)](#)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-brightgreen?style=flat-square)](LICENSE)
