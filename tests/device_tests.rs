@@ -215,3 +215,53 @@ fn test_unmount_invalid_device_rejected() {
     assert!(res.is_ok());
     assert!(res.unwrap().is_empty());
 }
+
+#[test]
+fn test_kde_automount_disable_modifier() {
+    use ferrix_usb::device::set_kde_automount_disabled;
+
+    let existing_active = "[Module-device_automounter]\nautoload=true\n";
+    let modified = set_kde_automount_disabled(existing_active).unwrap();
+    assert!(modified.contains("autoload=false"));
+    assert!(!modified.contains("autoload=true"));
+
+    let already_disabled = "[Module-device_automounter]\nautoload=false\n";
+    let res = set_kde_automount_disabled(already_disabled);
+    assert!(res.is_none());
+
+    let empty = "[General]\nfoo=bar\n";
+    let modified_empty = set_kde_automount_disabled(empty).unwrap();
+    assert!(modified_empty.contains("[Module-device_automounter]"));
+    assert!(modified_empty.contains("autoload=false"));
+}
+
+#[test]
+fn test_lxqt_and_lxde_automount_disable_modifiers() {
+    use ferrix_usb::device::{set_lxde_automount_disabled, set_lxqt_automount_disabled};
+
+    let lxqt_active = "[Volume]\nAutoMount=true\nAutoMountDevices=true\n";
+    let lxqt_mod = set_lxqt_automount_disabled(lxqt_active).unwrap();
+    assert!(lxqt_mod.contains("AutoMount=false"));
+    assert!(lxqt_mod.contains("AutoMountDevices=false"));
+    assert!(lxqt_mod.contains("AutoMountRemovable=false"));
+
+    let lxde_active = "[volume]\nmount_on_startup=1\nmount_removable=1\n";
+    let lxde_mod = set_lxde_automount_disabled(lxde_active).unwrap();
+    assert!(lxde_mod.contains("mount_on_startup=0"));
+    assert!(lxde_mod.contains("mount_removable=0"));
+}
+
+#[test]
+fn test_station_protection_guard_non_root() {
+    use ferrix_usb::device::StationProtectionGuard;
+
+    let mut guard = StationProtectionGuard::enable();
+    if !StationProtectionGuard::is_root() {
+        assert!(guard.saved_authorized_defaults.is_empty());
+        assert!(guard.stopped_services.is_empty());
+        assert!(guard.masked_services.is_empty());
+        assert!(!guard.created_udev_rule);
+        assert!(guard.restored_settings.is_empty());
+    }
+    guard.restore();
+}
