@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
+    let _station_guard = ferrix_usb::device::StationProtectionGuard::enable();
     let args = Cli::parse();
 
     match args.command {

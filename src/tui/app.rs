@@ -215,6 +215,49 @@ impl App {
             }
         }
 
+        if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
+            for entry_res in entries {
+                let entry = match entry_res {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                let p = entry.path();
+                if p.join("idVendor").exists() && p.join("idProduct").exists() {
+                    let auth_file = p.join("authorized");
+                    let is_unauthorized = fs::read_to_string(&auth_file)
+                        .map(|s| s.trim() == "0")
+                        .unwrap_or(false);
+                    if is_unauthorized {
+                        if let Ok(usb_dev) = crate::device::read_usb_device_from_sysfs(&p) {
+                            let has_storage = usb_dev.interfaces.iter().any(|i| {
+                                i.interface_class == crate::device::USB_CLASS_MASS_STORAGE
+                            }) || usb_dev.interfaces.is_empty();
+                            if has_storage {
+                                let vendor = usb_dev
+                                    .manufacturer
+                                    .unwrap_or_else(|| usb_dev.vendor_id.clone());
+                                let model = usb_dev
+                                    .product_name
+                                    .unwrap_or_else(|| usb_dev.product_id.clone());
+                                let serial = usb_dev.serial.unwrap_or_default();
+                                let name = format!("usb:{}", entry.file_name().to_string_lossy());
+                                list.push(DeviceEntry {
+                                    path: p,
+                                    name,
+                                    size_bytes: 0,
+                                    vendor,
+                                    model,
+                                    serial,
+                                    is_removable: true,
+                                    mount_points: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         self.devices = list;
         if self.selected_device_idx >= self.devices.len() && !self.devices.is_empty() {
             self.selected_device_idx = self.devices.len() - 1;
@@ -307,6 +350,69 @@ impl App {
                 .unwrap_or_default()
                 .as_secs();
             let scan_id = format!("scan-{now}-{}", crate::manifest::generate_nonce());
+
+            let is_unauthorized_usb = target_path.starts_with("/sys/bus/usb/devices/");
+            if is_unauthorized_usb {
+                let _ = tx.send(ScanEvent::Progress {
+                    stage_id: "device_scan".to_string(),
+                    current: 1,
+                    total: Some(3),
+                    message: Some(
+                        "Inspecting unauthorized USB descriptors before authorization..."
+                            .to_string(),
+                    ),
+                });
+
+                if let Ok(usb_dev) = crate::device::read_usb_device_from_sysfs(&target_path) {
+                    let pre_findings = crate::device::check_device_anomalies(&usb_dev, &policy);
+                    let has_critical = pre_findings
+                        .iter()
+                        .any(|f| f.severity == Severity::Critical);
+                    for f in pre_findings {
+                        let _ = tx.send(ScanEvent::FindingFound(f));
+                    }
+                    if has_critical {
+                        let _ = tx.send(ScanEvent::ScanFailed(
+                            "Device rejected: BadUSB composite device pattern detected. Never authorized."
+                                .to_string(),
+                        ));
+                        return;
+                    }
+                }
+
+                let _ = tx.send(ScanEvent::Progress {
+                    stage_id: "device_scan".to_string(),
+                    current: 2,
+                    total: Some(3),
+                    message: Some("Authorizing USB mass storage in sysfs...".to_string()),
+                });
+
+                if let Err(e) = crate::device::authorize_device(&target_path) {
+                    let _ = tx.send(ScanEvent::ScanFailed(format!(
+                        "Failed to authorize USB device: {e}"
+                    )));
+                    return;
+                }
+
+                let mut block_dev = None;
+                for _ in 0..25 {
+                    thread::sleep(std::time::Duration::from_millis(100));
+                    if let Some(b) = crate::device::find_block_device_for_usb_sysfs(&target_path) {
+                        block_dev = Some(b);
+                        break;
+                    }
+                }
+
+                if let Some(b) = block_dev {
+                    let _ = crate::device::set_block_device_readonly(&b);
+                    ctx.target_path = b;
+                } else {
+                    let _ = tx.send(ScanEvent::ScanFailed(
+                        "Timed out waiting for block device after authorization".to_string(),
+                    ));
+                    return;
+                }
+            }
 
             match mode {
                 ScanMode::Ingress => {
