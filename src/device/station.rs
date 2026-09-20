@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 fn is_valid_username(user: &str) -> bool {
     !user.is_empty()
@@ -8,6 +9,16 @@ fn is_valid_username(user: &str) -> bool {
         && user
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn user_dbus_bus_address(user: &str) -> Option<String> {
+    let uid = nix::unistd::User::from_name(user).ok().flatten()?.uid;
+    let bus_path = PathBuf::from(format!("/run/user/{uid}/bus"));
+    if bus_path.exists() {
+        Some(format!("unix:path={}", bus_path.display()))
+    } else {
+        None
+    }
 }
 
 pub struct StationProtectionGuard {
@@ -73,7 +84,9 @@ impl StationProtectionGuard {
         let mut restored_gnome_automount = None;
         if let Ok(sudo_user) = std::env::var("SUDO_USER") {
             if is_valid_username(&sudo_user) {
-                let check_gnome = std::process::Command::new("sudo")
+                let bus_addr = user_dbus_bus_address(&sudo_user);
+                let mut check_cmd = std::process::Command::new("sudo");
+                check_cmd
                     .args([
                         "-u",
                         &sudo_user,
@@ -83,11 +96,16 @@ impl StationProtectionGuard {
                         "org.gnome.desktop.media-handling",
                         "automount",
                     ])
-                    .output();
-                if let Ok(out) = check_gnome {
+                    .stderr(Stdio::null());
+                if let Some(ref bus) = bus_addr {
+                    check_cmd.env("DBUS_SESSION_BUS_ADDRESS", bus);
+                }
+
+                if let Ok(out) = check_cmd.output() {
                     let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     if val == "true" {
-                        let _ = std::process::Command::new("sudo")
+                        let mut set_automount = std::process::Command::new("sudo");
+                        set_automount
                             .args([
                                 "-u",
                                 &sudo_user,
@@ -98,8 +116,14 @@ impl StationProtectionGuard {
                                 "automount",
                                 "false",
                             ])
-                            .status();
-                        let _ = std::process::Command::new("sudo")
+                            .stderr(Stdio::null());
+                        if let Some(ref bus) = bus_addr {
+                            set_automount.env("DBUS_SESSION_BUS_ADDRESS", bus);
+                        }
+                        let _ = set_automount.status();
+
+                        let mut set_open = std::process::Command::new("sudo");
+                        set_open
                             .args([
                                 "-u",
                                 &sudo_user,
@@ -110,7 +134,12 @@ impl StationProtectionGuard {
                                 "automount-open",
                                 "false",
                             ])
-                            .status();
+                            .stderr(Stdio::null());
+                        if let Some(ref bus) = bus_addr {
+                            set_open.env("DBUS_SESSION_BUS_ADDRESS", bus);
+                        }
+                        let _ = set_open.status();
+
                         restored_gnome_automount = Some(true);
                     }
                 }
@@ -140,7 +169,9 @@ impl StationProtectionGuard {
         if self.restored_gnome_automount == Some(true) {
             if let Ok(sudo_user) = std::env::var("SUDO_USER") {
                 if is_valid_username(&sudo_user) {
-                    let _ = std::process::Command::new("sudo")
+                    let bus_addr = user_dbus_bus_address(&sudo_user);
+                    let mut set_automount = std::process::Command::new("sudo");
+                    set_automount
                         .args([
                             "-u",
                             &sudo_user,
@@ -151,8 +182,14 @@ impl StationProtectionGuard {
                             "automount",
                             "true",
                         ])
-                        .status();
-                    let _ = std::process::Command::new("sudo")
+                        .stderr(Stdio::null());
+                    if let Some(ref bus) = bus_addr {
+                        set_automount.env("DBUS_SESSION_BUS_ADDRESS", bus);
+                    }
+                    let _ = set_automount.status();
+
+                    let mut set_open = std::process::Command::new("sudo");
+                    set_open
                         .args([
                             "-u",
                             &sudo_user,
@@ -163,7 +200,11 @@ impl StationProtectionGuard {
                             "automount-open",
                             "true",
                         ])
-                        .status();
+                        .stderr(Stdio::null());
+                    if let Some(ref bus) = bus_addr {
+                        set_open.env("DBUS_SESSION_BUS_ADDRESS", bus);
+                    }
+                    let _ = set_open.status();
                 }
             }
             self.restored_gnome_automount = None;

@@ -11,7 +11,6 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
-    let _station_guard = ferrix_usb::device::StationProtectionGuard::enable();
     let args = Cli::parse();
 
     match args.command {
@@ -20,6 +19,7 @@ fn main() -> ExitCode {
                 eprintln!("Error: no command specified and --no-tui was requested");
                 return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
+            let _station_guard = ferrix_usb::device::StationProtectionGuard::enable();
             match ferrix_usb::tui::run_tui() {
                 Ok(_) => ExitCode::from(EXIT_PASS as u8),
                 Err(e) => {
@@ -29,6 +29,7 @@ fn main() -> ExitCode {
             }
         }
         Some(Commands::Scan(scan_args)) => {
+            let _station_guard = ferrix_usb::device::StationProtectionGuard::enable();
             if !scan_args.device.exists() {
                 eprintln!(
                     "Error: target '{}' does not exist",
@@ -735,6 +736,7 @@ fn main() -> ExitCode {
             if !nix::unistd::Uid::effective().is_root() {
                 eprintln!("Warning: USB authorization management in watch mode requires root privileges. Please re-run with 'sudo ferrix watch'.");
             }
+            let _station_guard = ferrix_usb::device::StationProtectionGuard::enable();
 
             println!(
                 "Starting ferrix offline hotplug watch mode (polling interval: {}s)...",
