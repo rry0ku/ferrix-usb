@@ -1,12 +1,16 @@
 pub mod anomalies;
 pub mod auth;
 pub mod descriptors;
+pub mod monitor;
 pub mod station;
+pub mod tpm;
 
 pub use anomalies::*;
 pub use auth::*;
 pub use descriptors::*;
+pub use monitor::*;
 pub use station::*;
+pub use tpm::*;
 
 use crate::core::{Finding, ScanContext, Stage, StageError};
 use crate::policy::Policy;

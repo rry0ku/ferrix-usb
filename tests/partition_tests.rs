@@ -448,3 +448,36 @@ fn test_inverted_partition_range_quarantines() {
     let verdict = resolve_verdict(&[stage.id()], &[stage_result], &findings);
     assert_eq!(verdict, Verdict::Quarantine);
 }
+
+fn make_extended_enclosing_mbr(total_sectors: u64, sector_size: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; total_sectors as usize * sector_size];
+    buf[510] = 0x55;
+    buf[511] = 0xAA;
+
+    let p1 = &mut buf[446..462];
+    p1[0] = 0x00;
+    p1[4] = 0x05;
+    p1[8..12].copy_from_slice(&2048u32.to_le_bytes());
+    p1[12..16].copy_from_slice(&8000u32.to_le_bytes());
+
+    let p2 = &mut buf[462..478];
+    p2[0] = 0x00;
+    p2[4] = 0x83;
+    p2[8..12].copy_from_slice(&2049u32.to_le_bytes());
+    p2[12..16].copy_from_slice(&2048u32.to_le_bytes());
+
+    buf
+}
+
+#[test]
+fn test_extended_partition_enclosing_logical_does_not_flag_overlapping() {
+    let img = make_extended_enclosing_mbr(12000, 512);
+    let path = write_temp_image("ferrix_test_extended_enclosing.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = PartitionScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(!findings.iter().any(|f| f.id == "FX-PART-001"));
+}

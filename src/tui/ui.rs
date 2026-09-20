@@ -4,7 +4,10 @@ use crate::tui::sanitize::sanitize_single_line;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 use ratatui::Frame;
 
 pub fn draw_ui(f: &mut Frame, app: &mut App) {
@@ -71,21 +74,40 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Screen::Triage => "[Tab] Switch Field  [Enter] Confirm Suppression  [Esc] Cancel",
     };
 
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "Keys: ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(hints, Style::default().fg(Color::White)),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
+    let footer = if let Some(ref msg) = app.status_message {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Notice: ",
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                msg,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  •  {hints}"), Style::default().fg(Color::DarkGray)),
+        ]))
+        .block(Block::default().borders(Borders::ALL))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Keys: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(hints, Style::default().fg(Color::White)),
+        ]))
+        .block(Block::default().borders(Borders::ALL))
+    };
 
     f.render_widget(footer, area);
 }
 
-fn draw_device_select(f: &mut Frame, area: Rect, app: &App) {
+fn draw_device_select(f: &mut Frame, area: Rect, app: &mut App) {
     if app.is_entering_manual_device {
         let block = Block::default()
             .title(" Enter Path to Block Device or Disk Image ")
@@ -127,6 +149,8 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &App) {
 
             let mount_tag = if dev.is_system_drive {
                 " [HOST OS DRIVE - PROTECTED]".to_string()
+            } else if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/") {
+                " [NO MEDIA / EMPTY]".to_string()
             } else if !dev.mount_points.is_empty() {
                 format!(" [MOUNTED at {} - UNSAFE]", dev.mount_points.join(", "))
             } else {
@@ -176,7 +200,22 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &App) {
     let title = format!(" Detected Storage Media & Images ({}) ", app.devices.len());
     let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
 
-    f.render_widget(list, area);
+    if app.devices.is_empty() {
+        app.device_list_state.select(None);
+    } else {
+        let sel = app.selected_device_idx.min(app.devices.len() - 1);
+        app.device_list_state.select(Some(sel));
+    }
+    f.render_stateful_widget(list, area, &mut app.device_list_state);
+
+    if !app.devices.is_empty() {
+        let mut scrollbar_state = ScrollbarState::new(app.devices.len().saturating_sub(1))
+            .position(app.selected_device_idx);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+        f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
 }
 
 fn draw_mode_select(f: &mut Frame, area: Rect, app: &App) {
@@ -293,12 +332,36 @@ fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(5), Constraint::Min(8)])
         .split(area);
 
+    let eta_str = if let Some(eta_secs) = app.estimated_eta_seconds {
+        if eta_secs >= 3600 {
+            format!(
+                " • ETA: {:02}:{:02}:{:02}",
+                eta_secs / 3600,
+                (eta_secs % 3600) / 60,
+                eta_secs % 60
+            )
+        } else {
+            format!(" • ETA: {:02}:{:02}", eta_secs / 60, eta_secs % 60)
+        }
+    } else {
+        String::new()
+    };
+
+    let speed_str = if app.transfer_speed_bps > 1024.0 {
+        let mbps = app.transfer_speed_bps / (1024.0 * 1024.0);
+        format!(" • {:.1} MB/s", mbps)
+    } else {
+        String::new()
+    };
+
     let max_label_len = chunks[0].width.saturating_sub(10) as usize;
     let stage_name = if app.current_stage_name.len() > max_label_len && max_label_len > 12 {
         format!("{}...", &app.current_stage_name[..max_label_len - 3])
     } else {
         app.current_stage_name.clone()
     };
+
+    let gauge_label = format!("{}%{eta_str}{speed_str} - {stage_name}", app.scan_progress_pct);
 
     let gauge = Gauge::default()
         .block(
@@ -319,7 +382,7 @@ fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         )
         .percent(app.scan_progress_pct)
-        .label(format!("{}% - {}", app.scan_progress_pct, stage_name));
+        .label(gauge_label);
 
     f.render_widget(gauge, chunks[0]);
 
@@ -329,14 +392,36 @@ fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
         .split(chunks[1]);
 
     let stages = match app.mode {
-        ScanMode::Ingress => vec![
-            (1, "USB Descriptors & BadUSB"),
-            (2, "Partition Table & Layout"),
-            (3, "Filesystem Structure"),
-            (4, "File Content & Evasion"),
-            (5, "Policy Rule Compliance"),
-        ],
-        ScanMode::Egress => vec![(1, "Remnants, Wipe & Metadata")],
+        ScanMode::Ingress => {
+            if app.total_stages == 6 {
+                vec![
+                    (1, "Device Snapshot & Hash"),
+                    (2, "USB Descriptors & BadUSB"),
+                    (3, "Partition Table & Layout"),
+                    (4, "Filesystem Structure"),
+                    (5, "File Content & Evasion"),
+                    (6, "Policy Rule Compliance"),
+                ]
+            } else {
+                vec![
+                    (1, "USB Descriptors & BadUSB"),
+                    (2, "Partition Table & Layout"),
+                    (3, "Filesystem Structure"),
+                    (4, "File Content & Evasion"),
+                    (5, "Policy Rule Compliance"),
+                ]
+            }
+        }
+        ScanMode::Egress => {
+            if app.total_stages == 2 {
+                vec![
+                    (1, "Device Snapshot & Hash"),
+                    (2, "Remnants, Wipe & Metadata"),
+                ]
+            } else {
+                vec![(1, "Remnants, Wipe & Metadata")]
+            }
+        }
     };
 
     let mut stage_lines = Vec::new();
@@ -442,11 +527,72 @@ fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(p_log, body_chunks[1]);
 }
 
-fn draw_results(f: &mut Frame, area: Rect, app: &App) {
+fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(8)])
         .split(area);
+
+    if let Some(ref err) = app.scan_error {
+        let banner = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "STATUS: ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "ERROR - SCAN FAILED / DEVICE INACCESSIBLE",
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .block(Block::default().borders(Borders::ALL))
+        .alignment(Alignment::Center);
+
+        f.render_widget(banner, chunks[0]);
+
+        let err_lines = vec![
+            Line::from(Span::styled(
+                "Device Access / Acquisition Failure",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Details: ", Style::default().fg(Color::Cyan)),
+                Span::styled(err, Style::default().fg(Color::White)),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Common Causes & Troubleshooting:",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )),
+            Line::from("• No media: Multi-slot card readers require a card (SD/CF/microSD) to be physically inserted."),
+            Line::from("• Privileges: Raw block devices require root access. Re-run with 'sudo ferrix'."),
+            Line::from("• Disconnected: Device was unplugged or reset by the kernel during initialization."),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press [Esc] to return to device selection.",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        ];
+
+        let p_err = Paragraph::new(err_lines)
+            .block(
+                Block::default()
+                    .title(" Scan Failure Details ")
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: true });
+
+        f.render_widget(p_err, chunks[1]);
+        return;
+    }
 
     let verdict = app.verdict.unwrap_or(Verdict::Quarantine);
     let (v_text, v_color) = match verdict {
@@ -477,7 +623,7 @@ fn draw_results(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
-    let findings = app.filtered_findings();
+    let findings: Vec<_> = app.filtered_findings().into_iter().cloned().collect();
     let items: Vec<ListItem> = findings
         .iter()
         .enumerate()
@@ -517,7 +663,22 @@ fn draw_results(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let list = List::new(items).block(Block::default().title(count_label).borders(Borders::ALL));
-    f.render_widget(list, sub_chunks[0]);
+    if findings.is_empty() {
+        app.findings_list_state.select(None);
+    } else {
+        let sel = app.selected_finding_idx.min(findings.len() - 1);
+        app.findings_list_state.select(Some(sel));
+    }
+    f.render_stateful_widget(list, sub_chunks[0], &mut app.findings_list_state);
+
+    if !findings.is_empty() {
+        let mut scrollbar_state = ScrollbarState::new(findings.len().saturating_sub(1))
+            .position(app.selected_finding_idx);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+        f.render_stateful_widget(scrollbar, sub_chunks[0], &mut scrollbar_state);
+    }
 
     let mut detail_text = if let Some(f) = findings.get(app.selected_finding_idx) {
         vec![

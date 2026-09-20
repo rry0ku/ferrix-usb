@@ -25,6 +25,14 @@ fn check_overlapping_partitions(layout: &DiskLayout, findings: &mut Vec<Finding>
             let p1 = &partitions[i];
             let p2 = &partitions[j];
 
+            let is_p1_ext = matches!(p1.type_byte, Some(0x05 | 0x0F | 0x85));
+            let is_p2_ext = matches!(p2.type_byte, Some(0x05 | 0x0F | 0x85));
+            if (is_p1_ext && p2.start_lba >= p1.start_lba && p2.end_lba <= p1.end_lba)
+                || (is_p2_ext && p1.start_lba >= p2.start_lba && p1.end_lba <= p2.end_lba)
+            {
+                continue;
+            }
+
             if p1.start_lba <= p2.end_lba && p2.start_lba <= p1.end_lba {
                 findings.push(Finding {
                     id: "FX-PART-001".to_string(),

@@ -356,6 +356,7 @@ impl StationProtectionGuard {
     }
 
     pub fn enable() -> Self {
+        register_exit_and_signal_cleanup();
         if !Self::is_root() {
             return Self {
                 saved_authorized_defaults: Vec::new(),
@@ -366,7 +367,7 @@ impl StationProtectionGuard {
             };
         }
 
-        let mut saved_defaults = Vec::new();
+        let saved_defaults = Vec::new();
         if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
             for entry_res in entries {
                 let entry = match entry_res {
@@ -379,8 +380,8 @@ impl StationProtectionGuard {
                     if auth_def.exists() {
                         if let Ok(current_val) = fs::read_to_string(&auth_def) {
                             let trimmed = current_val.trim().to_string();
-                            if fs::write(&auth_def, b"0\n").is_ok() {
-                                saved_defaults.push((auth_def, trimmed));
+                            if trimmed == "0" {
+                                let _ = fs::write(&auth_def, b"1\n");
                             }
                         }
                     }
@@ -463,19 +464,34 @@ impl StationProtectionGuard {
 
     pub fn restore(&mut self) {
         for (path, val) in &self.saved_authorized_defaults {
-            let _ = fs::write(path, format!("{val}\n"));
+            let restore_val = if val == "0" { "1" } else { val };
+            let _ = fs::write(path, format!("{restore_val}\n"));
         }
         self.saved_authorized_defaults.clear();
 
-        if self.created_udev_rule {
-            let udev_rule_file = Path::new("/run/udev/rules.d/99-ferrix-no-automount.rules");
+        if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
+            for entry_res in entries {
+                if let Ok(entry) = entry_res {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("usb") {
+                        let auth_def = entry.path().join("authorized_default");
+                        if auth_def.exists() {
+                            let _ = fs::write(&auth_def, b"1\n");
+                        }
+                    }
+                }
+            }
+        }
+
+        let udev_rule_file = Path::new("/run/udev/rules.d/99-ferrix-no-automount.rules");
+        if udev_rule_file.exists() {
             let _ = fs::remove_file(udev_rule_file);
             let _ = std::process::Command::new("udevadm")
                 .args(["control", "--reload"])
                 .stderr(Stdio::null())
                 .status();
-            self.created_udev_rule = false;
         }
+        self.created_udev_rule = false;
 
         for svc in self.masked_services.drain(..) {
             let _ = std::process::Command::new("systemctl")
@@ -489,6 +505,34 @@ impl StationProtectionGuard {
                 .args(["start", &svc])
                 .stderr(Stdio::null())
                 .status();
+        }
+
+        for svc in ["udisks2", "autofs"] {
+            let _ = std::process::Command::new("systemctl")
+                .args(["unmask", "--runtime", svc])
+                .stderr(Stdio::null())
+                .status();
+            let _ = std::process::Command::new("systemctl")
+                .args(["start", svc])
+                .stderr(Stdio::null())
+                .status();
+        }
+
+        if let Ok(entries) = fs::read_dir("/sys/block") {
+            for entry_res in entries {
+                if let Ok(entry) = entry_res {
+                    let path = entry.path();
+                    let is_removable = fs::read_to_string(path.join("removable"))
+                        .map(|s| s.trim() == "1")
+                        .unwrap_or(false);
+                    if is_removable {
+                        let ro_file = path.join("ro");
+                        if ro_file.exists() {
+                            let _ = fs::write(&ro_file, b"0\n");
+                        }
+                    }
+                }
+            }
         }
 
         if let Ok(sudo_user) = std::env::var("SUDO_USER") {
@@ -558,6 +602,7 @@ impl StationProtectionGuard {
                 }
             }
         }
+        restore_all_system_automount_defaults();
     }
 }
 
@@ -575,6 +620,9 @@ pub fn find_block_device_for_usb_sysfs(sysfs_path: &Path) -> Option<PathBuf> {
                 Ok(e) => e,
                 Err(_) => continue,
             };
+            if entry.path().join("partition").exists() {
+                continue;
+            }
             if let Ok(canonical_block) = fs::canonicalize(entry.path()) {
                 if canonical_block.starts_with(&canonical_sysfs) {
                     let dev_name = entry.file_name().to_string_lossy().to_string();
@@ -587,4 +635,191 @@ pub fn find_block_device_for_usb_sysfs(sysfs_path: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+pub fn cleanup_lingering_station_lockdown() {
+    let udev_rule_file = Path::new("/run/udev/rules.d/99-ferrix-no-automount.rules");
+    if udev_rule_file.exists() {
+        let _ = fs::remove_file(udev_rule_file);
+        let _ = std::process::Command::new("udevadm")
+            .args(["control", "--reload"])
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
+        for entry_res in entries.flatten() {
+            let name = entry_res.file_name().to_string_lossy().to_string();
+            if name.starts_with("usb") {
+                let auth_def = entry_res.path().join("authorized_default");
+                if auth_def.exists() {
+                    if let Ok(val) = fs::read_to_string(&auth_def) {
+                        if val.trim() == "0" {
+                            let _ = fs::write(&auth_def, b"1\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for svc in ["udisks2", "autofs"] {
+        let _ = std::process::Command::new("systemctl")
+            .args(["unmask", "--runtime", svc])
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::process::Command::new("systemctl")
+            .args(["start", svc])
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    if let Ok(entries) = fs::read_dir("/sys/block") {
+        for entry_res in entries.flatten() {
+            let path = entry_res.path();
+            let is_removable = fs::read_to_string(path.join("removable"))
+                .map(|s| s.trim() == "1")
+                .unwrap_or(false);
+            if is_removable {
+                let ro_file = path.join("ro");
+                if ro_file.exists() {
+                    if let Ok(val) = fs::read_to_string(&ro_file) {
+                        if val.trim() == "1" {
+                            let _ = fs::write(&ro_file, b"0\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for temp_dir in [Path::new("/tmp"), Path::new("/var/tmp")] {
+        if let Ok(entries) = fs::read_dir(temp_dir) {
+            for entry_res in entries.flatten() {
+                let name = entry_res.file_name().to_string_lossy().to_string();
+                if name.starts_with("ferrix-")
+                    && (name.ends_with(".img") || name.ends_with(".raw"))
+                {
+                    let _ = fs::remove_file(entry_res.path());
+                }
+            }
+        }
+    }
+}
+
+static CLEANUP_REGISTERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn exit_cleanup_handler() {
+    restore_all_system_automount_defaults();
+}
+
+extern "C" fn signal_cleanup_handler(sig: libc::c_int) {
+    restore_all_system_automount_defaults();
+    unsafe {
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
+pub fn register_exit_and_signal_cleanup() {
+    if CLEANUP_REGISTERED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    unsafe {
+        libc::atexit(exit_cleanup_handler);
+        libc::signal(
+            libc::SIGINT,
+            signal_cleanup_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            signal_cleanup_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGHUP,
+            signal_cleanup_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGQUIT,
+            signal_cleanup_handler as *const () as libc::sighandler_t,
+        );
+    }
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_all_system_automount_defaults();
+        prev_hook(info);
+    }));
+}
+
+pub fn restore_all_system_automount_defaults() {
+    cleanup_lingering_station_lockdown();
+
+    let restore_desktop = |user: &str| {
+        if is_valid_username(user) {
+            let bus_addr = user_dbus_bus_address(user);
+            let schemas = [
+                "org.gnome.desktop.media-handling",
+                "org.cinnamon.desktop.media-handling",
+                "org.mate.media-handling",
+            ];
+            for schema in schemas {
+                for key in ["automount", "automount-open"] {
+                    let mut cmd = std::process::Command::new("sudo");
+                    cmd.args(["-u", user, "--", "gsettings", "set", schema, key, "true"])
+                        .stderr(Stdio::null());
+                    if let Some(ref bus) = bus_addr {
+                        cmd.env("DBUS_SESSION_BUS_ADDRESS", bus);
+                    }
+                    let _ = cmd.status();
+                }
+            }
+            let mut xf_cmd1 = std::process::Command::new("sudo");
+            xf_cmd1
+                .args([
+                    "-u",
+                    user,
+                    "--",
+                    "xfconf-query",
+                    "-c",
+                    "thunar-volman",
+                    "-p",
+                    "/automount-media/enabled",
+                    "-s",
+                    "true",
+                ])
+                .stderr(Stdio::null());
+            if let Some(ref bus) = bus_addr {
+                xf_cmd1.env("DBUS_SESSION_BUS_ADDRESS", bus);
+            }
+            let _ = xf_cmd1.status();
+
+            let mut xf_cmd2 = std::process::Command::new("sudo");
+            xf_cmd2
+                .args([
+                    "-u",
+                    user,
+                    "--",
+                    "xfconf-query",
+                    "-c",
+                    "thunar-volman",
+                    "-p",
+                    "/automount-drives/enabled",
+                    "-s",
+                    "true",
+                ])
+                .stderr(Stdio::null());
+            if let Some(ref bus) = bus_addr {
+                xf_cmd2.env("DBUS_SESSION_BUS_ADDRESS", bus);
+            }
+            let _ = xf_cmd2.status();
+        }
+    };
+
+    if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+        restore_desktop(&sudo_user);
+    }
+    if let Ok(user) = std::env::var("USER") {
+        restore_desktop(&user);
+    }
 }

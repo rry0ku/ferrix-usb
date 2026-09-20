@@ -1,14 +1,14 @@
 pub mod anomalies;
+pub mod disposable;
 pub mod partition;
 pub mod snapshot;
 
 pub use anomalies::*;
+pub use disposable::*;
 pub use partition::*;
 pub use snapshot::*;
 
 use crate::core::{Finding, ScanContext, Stage, StageError};
-use std::fs::File;
-use std::io::{Seek, SeekFrom};
 
 pub struct PartitionScanStage {
     pub sector_size: u32,
@@ -37,20 +37,14 @@ impl Stage for PartitionScanStage {
 
     fn run(&self, ctx: &ScanContext) -> Result<Vec<Finding>, StageError> {
         let scan_path = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
-        let mut file = File::open(scan_path).map_err(|e| {
+        let mut file = open_device_or_file_with_retry(scan_path, std::time::Duration::from_secs(3)).map_err(|e| {
             StageError::Io(format!(
                 "failed to open scan target {}: {e}",
                 scan_path.display()
             ))
         })?;
 
-        let mut total_bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if total_bytes == 0 {
-            if let Ok(end_pos) = file.seek(SeekFrom::End(0)) {
-                total_bytes = end_pos;
-                let _ = file.seek(SeekFrom::Start(0));
-            }
-        }
+        let total_bytes = crate::disk::snapshot::get_device_or_file_size(&file, scan_path);
 
         ctx.event_sink.emit(crate::core::ScanEvent::Progress {
             stage_id: self.id().to_string(),

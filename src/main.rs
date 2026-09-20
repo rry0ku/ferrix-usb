@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
+    ferrix_usb::device::register_exit_and_signal_cleanup();
     let args = Cli::parse();
 
     match args.command {
@@ -38,11 +39,112 @@ fn main() -> ExitCode {
                 return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
 
-            let mut ctx = ferrix_usb::core::ScanContext::new(scan_args.device.clone());
-            let (policy, warning) = ferrix_usb::policy::load_policy(args.policy.as_deref(), None);
+            let (event_tx, event_rx) = std::sync::mpsc::channel();
+            let mut ctx = ferrix_usb::core::ScanContext::new(scan_args.device.clone())
+                .with_event_sink(ferrix_usb::core::EventSink::new(event_tx));
+            let is_json = args.json;
+            let progress_handle = std::thread::spawn(move || {
+                let start_time = std::time::Instant::now();
+                let mut last_update = std::time::Instant::now();
+                let mut last_bytes = 0u64;
+                while let Ok(event) = event_rx.recv() {
+                    if is_json {
+                        continue;
+                    }
+                    if let ferrix_usb::core::ScanEvent::Progress {
+                        stage_id,
+                        current,
+                        total,
+                        message,
+                    } = event
+                    {
+                        let dt = last_update.elapsed().as_secs_f64();
+                        let mut speed_str = String::new();
+                        let mut eta_str = String::new();
+                        if stage_id == "snapshot" {
+                            if dt >= 0.25 {
+                                let speed = (current.saturating_sub(last_bytes) as f64) / dt;
+                                if speed > 1024.0 {
+                                    speed_str =
+                                        format!(" ({:.1} MB/s)", speed / (1024.0 * 1024.0));
+                                    if let Some(tot) = total {
+                                        let remaining = tot.saturating_sub(current) as f64;
+                                        let eta_sec = (remaining / speed) as u64;
+                                        eta_str = format!(
+                                            " [ETA: {:02}:{:02}]",
+                                            eta_sec / 60,
+                                            eta_sec % 60
+                                        );
+                                    }
+                                }
+                                last_bytes = current;
+                                last_update = std::time::Instant::now();
+                            }
+                        } else if let Some(tot) = total {
+                            if tot > 0 && current > 0 {
+                                let elapsed = start_time.elapsed().as_secs_f64();
+                                let frac = (current as f64) / (tot as f64);
+                                let total_est = elapsed / frac;
+                                let eta_sec = (total_est - elapsed) as u64;
+                                eta_str =
+                                    format!(" [ETA: {:02}:{:02}]", eta_sec / 60, eta_sec % 60);
+                            }
+                        }
+
+                        let pct_str = if let Some(tot) = total {
+                            if tot > 0 {
+                                format!("{:.1}%", (current as f64 / tot as f64) * 100.0)
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        };
+
+                        let msg = message.unwrap_or_else(|| stage_id.clone());
+                        use std::io::Write;
+                        let _ = write!(
+                            std::io::stderr(),
+                            "\r\x1b[2K[{pct_str}]{speed_str}{eta_str} {msg}"
+                        );
+                        let _ = std::io::stderr().flush();
+                    }
+                }
+                if !is_json {
+                    use std::io::Write;
+                    let _ = write!(std::io::stderr(), "\r\x1b[2K");
+                    let _ = std::io::stderr().flush();
+                }
+            });
+            let (mut policy, warning) = ferrix_usb::policy::load_policy(args.policy.as_deref(), None);
             if let Some(warn) = warning {
                 eprintln!("{warn}");
             }
+
+            if let Some(ref yara_path) = scan_args.yara {
+                policy.yara_rules.push(yara_path.display().to_string());
+            }
+            if scan_args.clamav {
+                policy.clamav.enabled = true;
+            }
+            if let Some(ref sock) = scan_args.clamav_socket {
+                policy.clamav.socket_path = Some(sock.clone());
+            }
+            if scan_args.carve {
+                policy.carve.enabled = true;
+            }
+
+            let disposable_env = if scan_args.disposable {
+                match ferrix_usb::disk::DisposableEnvironment::create("session") {
+                    Ok(env) => Some(env),
+                    Err(e) => {
+                        eprintln!("Error creating disposable environment: {e}");
+                        return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                    }
+                }
+            } else {
+                None
+            };
 
             let is_block_device = {
                 use std::os::unix::fs::FileTypeExt;
@@ -54,19 +156,95 @@ fn main() -> ExitCode {
                         .unwrap_or(false)
             };
 
+            if is_block_device {
+                if ferrix_usb::device::is_system_device(&scan_args.device)
+                    || !ferrix_usb::device::is_external_device(&scan_args.device)
+                {
+                    eprintln!(
+                        "SECURITY ERROR: Refusing to inspect '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
+                        scan_args.device.display()
+                    );
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+            }
+
             if is_block_device && !nix::unistd::Uid::effective().is_root() {
                 eprintln!("Note: inspecting physical block devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix scan ...'.");
             }
 
-            let temp_snapshot_path = if is_block_device {
-                let snap_path = args
-                    .out
-                    .as_ref()
-                    .map(|o| o.join("snapshot.img"))
-                    .unwrap_or_else(|| {
-                        std::env::temp_dir()
-                            .join(format!("ferrix-snapshot-{}.img", std::process::id()))
-                    });
+            let test_file = match ferrix_usb::disk::open_device_or_file_with_retry(
+                &scan_args.device,
+                std::time::Duration::from_secs(3),
+            ) {
+                Ok(f) => f,
+                Err(e) => {
+                    let msg = match e.raw_os_error() {
+                        Some(6) => format!(
+                            "Error: No media inserted in device '{}' (os error 6: ENXIO).",
+                            scan_args.device.display()
+                        ),
+                        Some(13) => format!(
+                            "Error: Permission denied accessing '{}' (os error 13: EACCES). Re-run with 'sudo ferrix scan ...'.",
+                            scan_args.device.display()
+                        ),
+                        _ => format!(
+                            "Error: Cannot access scan target '{}': {e}",
+                            scan_args.device.display()
+                        ),
+                    };
+                    eprintln!("{msg}");
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+            };
+
+            let device_size = ferrix_usb::disk::snapshot::get_device_or_file_size(&test_file, &scan_args.device);
+            if device_size == 0 {
+                eprintln!(
+                    "Error: Target '{}' has 0 bytes (no media inserted or device is empty).",
+                    scan_args.device.display()
+                );
+                return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+            }
+
+            let temp_snapshot_path = if let Some(ref env) = disposable_env {
+                let snap_path = env.snapshot_path();
+                if !args.json {
+                    println!(
+                        "Creating disposable snapshot in memory-backed workspace: {}...",
+                        snap_path.display()
+                    );
+                }
+                match ferrix_usb::disk::snapshot::create_snapshot(
+                    &scan_args.device,
+                    &snap_path,
+                    &ctx.event_sink,
+                ) {
+                    Ok(s) => {
+                        ctx.snapshot_path = Some(s.path.clone());
+                        Some(s.path)
+                    }
+                    Err(e) => {
+                        eprintln!("Error creating device snapshot: {e}");
+                        return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                    }
+                }
+            } else if is_block_device {
+                let snap_path = match args.out.as_ref() {
+                    Some(o) if !o.is_dir() => o.clone(),
+                    _ => {
+                        let snap_dir = match ferrix_usb::disk::resolve_snapshot_directory(
+                            device_size,
+                            args.out.as_deref(),
+                        ) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                eprintln!("Error resolving snapshot location: {e}");
+                                return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                            }
+                        };
+                        snap_dir.join(format!("ferrix-snapshot-{}.img", std::process::id()))
+                    }
+                };
                 if !args.json {
                     println!(
                         "Creating read-only snapshot of block device {}...",
@@ -144,6 +322,8 @@ fn main() -> ExitCode {
                 };
                 completed_stages.push(stage_result);
             }
+            ctx.event_sink = ferrix_usb::core::EventSink::noop();
+            let _ = progress_handle.join();
 
             let required_stages = [
                 device_stage.id(),
@@ -226,9 +406,65 @@ fn main() -> ExitCode {
                 };
 
                 let station_key_path = PathBuf::from("station.key");
-                if station_key_path.exists() {
-                    if let Ok(sk) = load_station_signing_key(&station_key_path) {
-                        let _ = manifest.sign(&sk);
+                let station_key = if station_key_path.exists() {
+                    load_station_signing_key(&station_key_path).ok()
+                } else {
+                    None
+                };
+
+                if let Some(ref sk) = station_key {
+                    let _ = manifest.sign(sk);
+                }
+
+                let usb_dev = ferrix_usb::device::find_usb_device_sysfs_for_block_device(&scan_args.device)
+                    .and_then(|p| ferrix_usb::device::read_usb_device_from_sysfs(&p).ok());
+
+                let eff_sec = if scan_args.sector_size == 0 { 512 } else { scan_args.sector_size as u64 };
+                let acq_report = ferrix_usb::report::ForensicAcquisitionReport {
+                    sha256: String::new(),
+                    blake3: device_hash.clone(),
+                    timestamp: now_ts,
+                    total_sectors: device_size_bytes / eff_sec,
+                    total_bytes: device_size_bytes,
+                    sector_size: scan_args.sector_size,
+                };
+
+                let dummy_layout = ferrix_usb::disk::partition::DiskLayout {
+                    sector_size: scan_args.sector_size,
+                    total_sectors: acq_report.total_sectors,
+                    table_type: ferrix_usb::disk::partition::PartitionTableType::None,
+                    partitions: Vec::new(),
+                    has_protective_mbr: false,
+                    primary_gpt_valid: false,
+                    backup_gpt_valid: false,
+                    gpt_differs_from_backup: false,
+                    backup_gpt_lba_mismatch: false,
+                    mbr_partition_count: 0,
+                    gpt_partition_count: 0,
+                };
+
+                let mut forensic_report = ferrix_usb::report::ForensicReport::new(
+                    "station-local".to_string(),
+                    usb_dev.as_ref(),
+                    acq_report,
+                    &dummy_layout,
+                    all_findings.clone(),
+                    verdict,
+                    policy.compute_hash(),
+                );
+
+                if let Some(ref sk) = station_key {
+                    let _ = forensic_report.sign(sk);
+                }
+
+                if scan_args.bundle {
+                    let _ = ferrix_usb::report::generate_evidence_bundle(
+                        &forensic_report,
+                        &manifest,
+                        out_dir,
+                    );
+                    if !args.json {
+                        println!("Evidence bundle generated at: {}", out_dir.join("evidence").display());
                     }
                 }
 
@@ -339,7 +575,29 @@ fn main() -> ExitCode {
                 return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
 
-            if egress_args.device.starts_with("/dev/") && !nix::unistd::Uid::effective().is_root() {
+            let is_block_device = egress_args.device.starts_with("/dev/")
+                || egress_args
+                    .device
+                    .metadata()
+                    .map(|m| {
+                        use std::os::unix::fs::FileTypeExt;
+                        m.file_type().is_block_device()
+                    })
+                    .unwrap_or(false);
+
+            if is_block_device {
+                if ferrix_usb::device::is_system_device(&egress_args.device)
+                    || !ferrix_usb::device::is_external_device(&egress_args.device)
+                {
+                    eprintln!(
+                        "SECURITY ERROR: Refusing to inspect '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
+                        egress_args.device.display()
+                    );
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+            }
+
+            if is_block_device && !nix::unistd::Uid::effective().is_root() {
                 eprintln!("Note: inspecting physical block devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix egress ...'.");
             }
 
@@ -393,40 +651,13 @@ fn main() -> ExitCode {
             ExitCode::from(verdict.exit_code() as u8)
         }
         Some(Commands::Verify(verify_args)) => {
-            if !verify_args.device.exists() {
+            if !verify_args.target.exists() {
                 eprintln!(
-                    "Error: target device '{}' does not exist",
-                    verify_args.device.display()
+                    "Error: target '{}' does not exist",
+                    verify_args.target.display()
                 );
                 return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
             }
-            if !verify_args.manifest.exists() {
-                eprintln!(
-                    "Error: manifest file '{}' does not exist",
-                    verify_args.manifest.display()
-                );
-                return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
-            }
-
-            if verify_args.device.starts_with("/dev/") && !nix::unistd::Uid::effective().is_root() {
-                eprintln!("Note: verifying physical block devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix verify ...'.");
-            }
-
-            let manifest_data = match std::fs::read(&verify_args.manifest) {
-                Ok(data) => data,
-                Err(e) => {
-                    eprintln!("Error reading manifest: {e}");
-                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
-                }
-            };
-
-            let manifest: Manifest = match serde_json::from_slice(&manifest_data) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("Error parsing manifest JSON: {e}");
-                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
-                }
-            };
 
             let pubkey_path = verify_args
                 .pubkey
@@ -434,8 +665,8 @@ fn main() -> ExitCode {
                 .or_else(|| {
                     verify_args
                         .manifest
-                        .parent()
-                        .map(|p| p.join("station.pub"))
+                        .as_ref()
+                        .and_then(|m| m.parent().map(|p| p.join("station.pub")))
                         .filter(|p| p.exists())
                 })
                 .unwrap_or_else(|| PathBuf::from("station.pub"));
@@ -451,14 +682,101 @@ fn main() -> ExitCode {
                 }
             };
 
-            let nonce_log_path = verify_args
-                .manifest
+            if verify_args.manifest.is_none()
+                && (verify_args.target.extension().map(|e| e == "json").unwrap_or(false)
+                    || verify_args.target.to_string_lossy().contains("report"))
+            {
+                match ferrix_usb::manifest::verify_forensic_report_file(&verify_args.target, &pubkey) {
+                    Ok(true) => {
+                        println!(
+                            "PASS: report '{}' is validly signed by station public key '{}'",
+                            verify_args.target.display(),
+                            pubkey_path.display()
+                        );
+                        return ExitCode::from(EXIT_PASS as u8);
+                    }
+                    Ok(false) => {
+                        println!(
+                            "FAIL: report '{}' failed cryptographic verification: signature is invalid",
+                            verify_args.target.display()
+                        );
+                        return ExitCode::from(EXIT_FAIL as u8);
+                    }
+                    Err(e) => {
+                        println!(
+                            "FAIL: report '{}' failed cryptographic verification: {e}",
+                            verify_args.target.display()
+                        );
+                        return ExitCode::from(EXIT_FAIL as u8);
+                    }
+                }
+            }
+
+            let manifest_path = match verify_args.manifest {
+                Some(ref m) => m.clone(),
+                None => {
+                    eprintln!("Error: --manifest is required when verifying media");
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+            };
+
+            if !manifest_path.exists() {
+                eprintln!(
+                    "Error: manifest file '{}' does not exist",
+                    manifest_path.display()
+                );
+                return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+            }
+
+            let is_block_device = verify_args.target.starts_with("/dev/")
+                || verify_args
+                    .target
+                    .metadata()
+                    .map(|m| {
+                        use std::os::unix::fs::FileTypeExt;
+                        m.file_type().is_block_device()
+                    })
+                    .unwrap_or(false);
+
+            if is_block_device {
+                if ferrix_usb::device::is_system_device(&verify_args.target)
+                    || !ferrix_usb::device::is_external_device(&verify_args.target)
+                {
+                    eprintln!(
+                        "SECURITY ERROR: Refusing to verify '{}'. Ferrix only inspects externally connected removable media, never host system or internal drives.",
+                        verify_args.target.display()
+                    );
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+            }
+
+            if is_block_device && !nix::unistd::Uid::effective().is_root() {
+                eprintln!("Note: verifying physical block devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix verify ...'.");
+            }
+
+            let manifest_data = match std::fs::read(&manifest_path) {
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!("Error reading manifest: {e}");
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+            };
+
+            let manifest: Manifest = match serde_json::from_slice(&manifest_data) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("Error parsing manifest JSON: {e}");
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                }
+            };
+
+            let nonce_log_path = manifest_path
                 .parent()
                 .map(|p| p.join("accepted_nonces.log"))
                 .unwrap_or_else(|| PathBuf::from("accepted_nonces.log"));
 
             match manifest.verify_against_media_with_nonce_log(
-                &verify_args.device,
+                &verify_args.target,
                 &pubkey,
                 Some(&nonce_log_path),
             ) {
@@ -471,14 +789,14 @@ fn main() -> ExitCode {
                     } else if report.valid {
                         println!(
                             "PASS: media '{}' matches manifest from station '{}'",
-                            verify_args.device.display(),
+                            verify_args.target.display(),
                             report.manifest_station_id
                         );
                         println!("Original scan verdict: {}", report.manifest_verdict);
                     } else {
                         println!(
                             "FAIL: media '{}' failed verification against manifest",
-                            verify_args.device.display()
+                            verify_args.target.display()
                         );
                         println!("\nMismatches ({}):", report.mismatches.len());
                         for m in &report.mismatches {
@@ -877,6 +1195,43 @@ fn main() -> ExitCode {
 
                 std::thread::sleep(std::time::Duration::from_secs(watch_args.interval));
             }
+        }
+        Some(Commands::Mount(mount_args)) => {
+            if !nix::unistd::Uid::effective().is_root() {
+                eprintln!("Note: mounting devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix mount ...'.");
+            }
+            match ferrix_usb::device::mount_external_device(
+                &mount_args.device,
+                mount_args.mountpoint.as_deref(),
+                mount_args.rw,
+            ) {
+                Ok(mounted_dir) => {
+                    let mode_str = if mount_args.rw {
+                        "read-write (rw,nodev,nosuid)"
+                    } else {
+                        "read-only (ro,nodev,nosuid,noexec)"
+                    };
+                    println!(
+                        "Successfully mounted '{}' at '{}' [{}]",
+                        mount_args.device.display(),
+                        mounted_dir.display(),
+                        mode_str
+                    );
+                    ExitCode::from(EXIT_PASS as u8)
+                }
+                Err(e) => {
+                    eprintln!("Mount error: {e}");
+                    ExitCode::from(EXIT_INTERNAL_ERROR as u8)
+                }
+            }
+        }
+        Some(Commands::Restore) => {
+            if !nix::unistd::Uid::effective().is_root() {
+                eprintln!("Note: restoring system services requires elevated privileges. If access fails, re-run with 'sudo ferrix restore'.");
+            }
+            ferrix_usb::device::restore_all_system_automount_defaults();
+            println!("System USB automount defaults and services successfully restored.");
+            ExitCode::from(EXIT_PASS as u8)
         }
     }
 }

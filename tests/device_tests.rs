@@ -265,3 +265,102 @@ fn test_station_protection_guard_non_root() {
     }
     guard.restore();
 }
+
+#[test]
+fn test_is_external_device_semantics() {
+    use ferrix_usb::device::is_external_device;
+    use std::path::Path;
+
+    assert!(!is_external_device(Path::new("")));
+    assert!(!is_external_device(Path::new("/dev/loop0")));
+    assert!(!is_external_device(Path::new("/dev/ram0")));
+    assert!(!is_external_device(Path::new("/dev/dm-0")));
+    assert!(!is_external_device(Path::new("/dev/md0")));
+    assert!(!is_external_device(Path::new("/dev/sr0")));
+
+    let temp_img = std::env::temp_dir().join("test_ext_drive.raw");
+    std::fs::write(&temp_img, vec![0u8; 512]).unwrap();
+    assert!(is_external_device(&temp_img));
+    let _ = std::fs::remove_file(temp_img);
+
+    let temp_file = std::env::temp_dir().join("test_other.txt");
+    std::fs::write(&temp_file, b"test").unwrap();
+    assert!(!is_external_device(&temp_file));
+    let _ = std::fs::remove_file(temp_file);
+}
+
+#[test]
+fn test_cleanup_lingering_station_lockdown_safe() {
+    use ferrix_usb::device::cleanup_lingering_station_lockdown;
+
+    cleanup_lingering_station_lockdown();
+}
+
+#[test]
+fn test_mount_external_device_security_checks() {
+    use ferrix_usb::device::mount_external_device;
+    use std::path::Path;
+
+    let res = mount_external_device(Path::new(""), None, false);
+    assert!(res.is_err());
+
+    let res_nonexistent =
+        mount_external_device(Path::new("/dev/nonexistent_device_test_12345"), None, false);
+    assert!(res_nonexistent.is_err());
+
+    let res_loop = mount_external_device(Path::new("/dev/loop0"), None, false);
+    assert!(res_loop.is_err());
+
+    if let Ok(content) = std::fs::read_to_string("/proc/mounts") {
+        for line in content.lines() {
+            let mut parts = line.split(' ');
+            if let (Some(dev), Some(mp)) = (parts.next(), parts.next()) {
+                if mp == "/" && dev.starts_with("/dev/") {
+                    let res_root = mount_external_device(Path::new(dev), None, false);
+                    assert!(res_root.is_err());
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_restore_all_system_automount_defaults_safe() {
+    use ferrix_usb::device::restore_all_system_automount_defaults;
+
+    restore_all_system_automount_defaults();
+}
+
+#[test]
+fn test_get_available_disk_space_and_resolve_dir() {
+    use ferrix_usb::disk::{get_available_disk_space, resolve_snapshot_directory};
+    use std::path::Path;
+
+    let space = get_available_disk_space(Path::new("/tmp")).unwrap();
+    assert!(space > 0);
+
+    let resolved = resolve_snapshot_directory(1024 * 1024, None).unwrap();
+    assert!(resolved.exists());
+
+    let impossible_space = u64::MAX / 2;
+    let err = resolve_snapshot_directory(impossible_space, None);
+    assert!(err.is_err());
+}
+
+#[test]
+fn test_create_snapshot_partial_file_cleanup_on_error() {
+    use ferrix_usb::core::{EventSink, ScanEvent};
+    use ferrix_usb::disk::create_snapshot;
+    use std::sync::mpsc::channel;
+
+    let (tx, _rx) = channel::<ScanEvent>();
+    let sink = EventSink::new(tx);
+
+    let non_existent_source = std::env::temp_dir().join("non_existent_source_for_test.raw");
+    let dest_file = std::env::temp_dir().join("test_cleanup_guard.img");
+
+    let res = create_snapshot(&non_existent_source, &dest_file, &sink);
+    assert!(res.is_err());
+    assert!(!dest_file.exists());
+}

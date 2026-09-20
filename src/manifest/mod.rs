@@ -1,6 +1,8 @@
 pub mod keygen;
+pub mod verify_report;
 
 pub use keygen::*;
+pub use verify_report::*;
 
 use crate::core::{MediaPath, StageError, StageResult, Verdict};
 use crate::disk::partition::{parse_disk_layout, DiskLayout};

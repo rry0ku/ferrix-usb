@@ -1,6 +1,7 @@
 use crate::core::{Finding, Severity, Stage, StageResult, StageStatus, Verdict};
 use crate::policy::Policy;
 use crate::triage::{current_timestamp, Suppression, SuppressionScope, SuppressionStore};
+use ratatui::widgets::ListState;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -78,12 +79,20 @@ pub struct App {
     pub completed_stages: Vec<StageResult>,
     pub all_findings: Vec<Finding>,
     pub selected_finding_idx: usize,
+    pub findings_list_state: ListState,
+    pub device_list_state: ListState,
+    pub scan_start_time: Option<std::time::Instant>,
+    pub last_progress_bytes: u64,
+    pub last_progress_time: Option<std::time::Instant>,
+    pub transfer_speed_bps: f64,
+    pub estimated_eta_seconds: Option<u64>,
     pub show_info_findings: bool,
     pub verdict: Option<Verdict>,
     pub scan_id: Option<String>,
     pub snapshot_path: Option<PathBuf>,
     pub rx_event: Option<Receiver<ScanEvent>>,
     pub status_message: Option<String>,
+    pub scan_error: Option<String>,
     pub triage_reason_input: String,
     pub triage_author_input: String,
     pub triage_focus_field: usize,
@@ -112,12 +121,20 @@ impl Default for App {
             completed_stages: Vec::new(),
             all_findings: Vec::new(),
             selected_finding_idx: 0,
+            findings_list_state: ListState::default(),
+            device_list_state: ListState::default(),
+            scan_start_time: None,
+            last_progress_bytes: 0,
+            last_progress_time: None,
+            transfer_speed_bps: 0.0,
+            estimated_eta_seconds: None,
             show_info_findings: false,
             verdict: None,
             scan_id: None,
             snapshot_path: None,
             rx_event: None,
             status_message: None,
+            scan_error: None,
             triage_reason_input: String::new(),
             triage_author_input: "sec-admin".to_string(),
             triage_focus_field: 0,
@@ -141,13 +158,26 @@ impl App {
                     Err(_) => continue,
                 };
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") {
+                if name.starts_with("loop")
+                    || name.starts_with("ram")
+                    || name.starts_with("dm-")
+                    || name.starts_with("md")
+                    || name.starts_with("sr")
+                {
                     continue;
                 }
 
                 let sys_path = entry.path();
                 let is_partition = sys_path.join("partition").exists();
                 if is_partition {
+                    continue;
+                }
+
+                let dev_path = PathBuf::from(format!("/dev/{name}"));
+                if crate::device::auth::is_system_device(&dev_path) {
+                    continue;
+                }
+                if !crate::device::auth::is_external_device(&dev_path) {
                     continue;
                 }
 
@@ -173,8 +203,7 @@ impl App {
                     .map(|s| s.trim().to_string())
                     .unwrap_or_default();
 
-                let dev_path = PathBuf::from(format!("/dev/{name}"));
-                let is_system_drive = crate::device::auth::is_system_device(&dev_path);
+                let is_system_drive = false;
                 let mount_points = crate::device::auth::check_device_mounts(&dev_path)
                     .into_iter()
                     .map(|(_, mp)| mp)
@@ -307,12 +336,30 @@ impl App {
             return;
         }
 
+        let is_block = target_path.starts_with("/dev/");
+        if is_block {
+            if crate::device::auth::is_system_device(&target_path)
+                || !crate::device::auth::is_external_device(&target_path)
+            {
+                self.status_message = Some(
+                    "SECURITY ERROR: Refusing to scan host system or non-external drive."
+                        .to_string(),
+                );
+                return;
+            }
+        }
+
         self.screen = Screen::Scanning;
         self.is_scanning = true;
         self.scan_progress_pct = 0;
         self.current_stage_name = "Initializing scan...".to_string();
         self.current_stage_index = 0;
         self.total_stages = 0;
+        self.scan_start_time = Some(std::time::Instant::now());
+        self.last_progress_bytes = 0;
+        self.last_progress_time = Some(std::time::Instant::now());
+        self.transfer_speed_bps = 0.0;
+        self.estimated_eta_seconds = None;
         self.scan_activity_log.clear();
         self.scan_activity_log
             .push(format!("Starting scan on: {}", target_path.display()));
@@ -425,6 +472,109 @@ impl App {
                 }
             }
 
+            let is_block_device = ctx.target_path.starts_with("/dev/")
+                || std::fs::metadata(&ctx.target_path)
+                    .map(|m| {
+                        use std::os::unix::fs::FileTypeExt;
+                        m.file_type().is_block_device()
+                    })
+                    .unwrap_or(false);
+
+            if is_block_device {
+                if crate::device::auth::is_system_device(&ctx.target_path)
+                    || !crate::device::auth::is_external_device(&ctx.target_path)
+                {
+                    let _ = tx.send(ScanEvent::ScanFailed(
+                        "SECURITY ERROR: Refusing to scan host system or non-external drive."
+                            .to_string(),
+                    ));
+                    return;
+                }
+            }
+
+            let mut dev_size = 0u64;
+            if is_block_device || ctx.target_path.is_file() {
+                let test_file = match crate::disk::open_device_or_file_with_retry(
+                    &ctx.target_path,
+                    std::time::Duration::from_secs(3),
+                ) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let msg = match e.raw_os_error() {
+                            Some(6) => format!(
+                                "No media inserted in device '{}' (os error 6: ENXIO).",
+                                ctx.target_path.display()
+                            ),
+                            Some(13) => format!(
+                                "Permission denied accessing '{}' (os error 13: EACCES). Run ferrix with sudo.",
+                                ctx.target_path.display()
+                            ),
+                            _ => format!(
+                                "Cannot open target '{}': {e}",
+                                ctx.target_path.display()
+                            ),
+                        };
+                        let _ = tx.send(ScanEvent::ScanFailed(msg));
+                        return;
+                    }
+                };
+
+                dev_size = crate::disk::snapshot::get_device_or_file_size(&test_file, &ctx.target_path);
+
+                if dev_size == 0 {
+                    let _ = tx.send(ScanEvent::ScanFailed(format!(
+                        "Target '{}' has 0 bytes (no media inserted or empty device).",
+                        ctx.target_path.display()
+                    )));
+                    return;
+                }
+            }
+
+            let total_pipeline_stages = match mode {
+                ScanMode::Ingress => if is_block_device { 6 } else { 5 },
+                ScanMode::Egress => if is_block_device { 2 } else { 1 },
+            };
+
+            if is_block_device {
+                let _ = tx.send(ScanEvent::StageStarted {
+                    name: "Acquiring Device Snapshot & Computing Hash".to_string(),
+                    index: 1,
+                    total: total_pipeline_stages,
+                });
+
+                let snap_dir = match crate::disk::resolve_snapshot_directory(dev_size, None) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let _ = tx.send(ScanEvent::ScanFailed(format!(
+                            "Cannot acquire device snapshot: {e}"
+                        )));
+                        return;
+                    }
+                };
+                let snap_path = snap_dir.join(format!("ferrix-tui-snapshot-{now}.img"));
+                match crate::disk::create_snapshot(
+                    &ctx.target_path,
+                    &snap_path,
+                    &ctx.event_sink,
+                ) {
+                    Ok(s) => {
+                        ctx.snapshot_path = Some(s.path);
+                        let _ = tx.send(ScanEvent::StageFinished(StageResult {
+                            stage_id: "snapshot".to_string(),
+                            status: StageStatus::Ok,
+                            findings: Vec::new(),
+                        }));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(ScanEvent::ScanFailed(format!(
+                            "Failed to acquire device snapshot from '{}': {e}",
+                            ctx.target_path.display()
+                        )));
+                        return;
+                    }
+                }
+            }
+
             match mode {
                 ScanMode::Ingress => {
                     let device_stage = crate::device::DeviceScanStage::new(policy.clone());
@@ -441,15 +591,15 @@ impl App {
                         &file_stage,
                         &policy_stage,
                     ];
-                    let total = stages.len();
+                    let stage_offset = if is_block_device { 1 } else { 0 };
                     let mut completed = Vec::new();
                     let mut findings = Vec::new();
 
                     for (idx, stage) in stages.iter().enumerate() {
                         let _ = tx.send(ScanEvent::StageStarted {
                             name: stage.name().to_string(),
-                            index: idx + 1,
-                            total,
+                            index: idx + 1 + stage_offset,
+                            total: total_pipeline_stages,
                         });
 
                         let stage_result = match stage.run(&ctx) {
@@ -510,10 +660,11 @@ impl App {
                 }
                 ScanMode::Egress => {
                     let egress_stage = crate::egress::EgressScanStage::new().with_verify_wipe(true);
+                    let stage_offset = if is_block_device { 1 } else { 0 };
                     let _ = tx.send(ScanEvent::StageStarted {
                         name: egress_stage.name().to_string(),
-                        index: 1,
-                        total: 1,
+                        index: 1 + stage_offset,
+                        total: total_pipeline_stages,
                     });
 
                     let mut findings = Vec::new();
@@ -588,11 +739,19 @@ impl App {
                         } else {
                             self.scan_progress_pct = 0;
                         }
+                        if let Some(start_time) = self.scan_start_time {
+                            let elapsed = start_time.elapsed().as_secs_f64();
+                            if self.scan_progress_pct > 0 && self.scan_progress_pct < 100 {
+                                let total_est = elapsed / (self.scan_progress_pct as f64 / 100.0);
+                                let eta = (total_est - elapsed).max(0.0);
+                                self.estimated_eta_seconds = Some(eta as u64);
+                            }
+                        }
                         self.scan_activity_log
                             .push(format!("[Stage {index}/{total}] Started: {name}"));
                     }
                     ScanEvent::Progress {
-                        stage_id: _,
+                        stage_id,
                         current,
                         total,
                         message,
@@ -605,6 +764,34 @@ impl App {
                                 let stage_slice = 100.0 / self.total_stages as f32;
                                 let frac = (current as f32 / tot as f32).clamp(0.0, 1.0);
                                 self.scan_progress_pct = (base_pct + frac * stage_slice) as u16;
+
+                                if stage_id == "snapshot" {
+                                    if let Some(last_time) = self.last_progress_time {
+                                        let dt = last_time.elapsed().as_secs_f64();
+                                        if dt >= 0.25 {
+                                            let bytes_delta =
+                                                current.saturating_sub(self.last_progress_bytes);
+                                            let speed = (bytes_delta as f64) / dt;
+                                            if speed > 0.0 {
+                                                self.transfer_speed_bps = speed;
+                                                let remaining_bytes = tot.saturating_sub(current);
+                                                let eta = (remaining_bytes as f64) / speed;
+                                                self.estimated_eta_seconds = Some(eta as u64);
+                                            }
+                                            self.last_progress_bytes = current;
+                                            self.last_progress_time =
+                                                Some(std::time::Instant::now());
+                                        }
+                                    }
+                                } else if let Some(start_time) = self.scan_start_time {
+                                    let elapsed = start_time.elapsed().as_secs_f64();
+                                    if self.scan_progress_pct > 0 && self.scan_progress_pct < 100 {
+                                        let total_est =
+                                            elapsed / (self.scan_progress_pct as f64 / 100.0);
+                                        let eta = (total_est - elapsed).max(0.0);
+                                        self.estimated_eta_seconds = Some(eta as u64);
+                                    }
+                                }
                             }
                         }
                         if let Some(ref msg) = message {
@@ -655,13 +842,16 @@ impl App {
                         self.snapshot_path = Some(target_path);
                         self.is_scanning = false;
                         self.scan_progress_pct = 100;
+                        self.estimated_eta_seconds = Some(0);
                         self.screen = Screen::Results;
                         self.selected_finding_idx = 0;
+                        self.findings_list_state.select(Some(0));
                     }
                     ScanEvent::ScanFailed(err) => {
                         self.scan_activity_log.push(format!("Scan failed: {err}"));
                         self.is_scanning = false;
                         self.status_message = Some(format!("Scan error: {err}"));
+                        self.scan_error = Some(err);
                         self.screen = Screen::Results;
                     }
                 }

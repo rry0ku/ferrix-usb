@@ -504,3 +504,77 @@ fn test_resolve_verdict_with_policy_actions() {
     let verdict = resolve_verdict_with_policy(&["test"], &stages, &[medium_finding], &policy);
     assert_eq!(verdict, Verdict::Quarantine);
 }
+
+#[test]
+fn test_policy_allows_mp3_audio_files_with_id3() {
+    let mut mp3_data = vec![0u8; 512];
+    mp3_data[0..3].copy_from_slice(b"ID3");
+    mp3_data[3] = 3;
+    mp3_data[4] = 0;
+    mp3_data[5] = 0;
+    mp3_data[6..10].copy_from_slice(&[0, 0, 0, 10]);
+
+    let img = make_fat32_image(1, 0x0C, "TRACK01", "MP3", &mp3_data);
+    let path = write_temp_file("ferrix_test_policy_mp3_id3.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = PolicyScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn test_policy_allows_raw_mpeg_sync_mp3() {
+    let mut mp3_data = vec![0u8; 512];
+    mp3_data[0] = 0xFF;
+    mp3_data[1] = 0xFB;
+    mp3_data[2] = 0x90;
+    mp3_data[3] = 0x64;
+
+    let img = make_fat32_image(1, 0x0C, "TRACK02", "MP3", &mp3_data);
+    let path = write_temp_file("ferrix_test_policy_mp3_sync.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = PolicyScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn test_policy_allows_flac_wav_mp4() {
+    let mut flac_data = vec![0u8; 512];
+    flac_data[0..4].copy_from_slice(b"fLaC");
+
+    let img = make_fat32_image(1, 0x0C, "MUSIC", "FLA", &flac_data);
+    let path = write_temp_file("ferrix_test_policy_flac.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = PolicyScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn test_policy_blocks_executable_disguised_as_mp3() {
+    let mut pe_data = vec![0u8; 512];
+    pe_data[0] = 0x4D;
+    pe_data[1] = 0x5A;
+
+    let img = make_fat32_image(1, 0x0C, "SONG", "MP3", &pe_data);
+    let path = write_temp_file("ferrix_test_policy_disguised_mp3.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = PolicyScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.iter().any(|f| f.id == "FX-POL-004"
+        && f.severity == Severity::High
+        && f.evidence.contains("Windows PE Executable")));
+}

@@ -12,7 +12,20 @@ pub fn inspect_pdf_content_with_policy(
     findings: &mut Vec<Finding>,
     policy: &Policy,
 ) {
-    if data.len() < 4 || &data[0..4] != b"%PDF" {
+    if data.len() < 4 {
+        return;
+    }
+
+    if !data.starts_with(b"%PDF") {
+        findings.push(Finding {
+            id: "FX-FILE-008".to_string(),
+            severity: Severity::Medium,
+            confidence: Confidence::High,
+            stage: "file_scan".to_string(),
+            location: Location::Path(media_path.clone()),
+            reason: "malformed PDF header".to_string(),
+            evidence: "file does not start with standard %PDF magic header".to_string(),
+        });
         return;
     }
 
@@ -32,24 +45,29 @@ pub fn inspect_pdf_content_with_policy(
         search_patterns.push((b"/EmbeddedFile", "embedded file stream detected in PDF"));
     }
 
-    if search_patterns.is_empty() {
-        return;
-    }
+    search_patterns.push((b"/URI", "external hyperlink URI action detected in PDF"));
+    search_patterns.push((b"/GoToR", "remote GoTo action detected in PDF (cross-document navigation)"));
+    search_patterns.push((b"/SubmitForm", "form submission action detected in PDF (data exfiltration risk)"));
 
     let mut detected_patterns = HashSet::new();
 
     for &(pattern, reason) in &search_patterns {
         if data.windows(pattern.len()).any(|window| window == pattern) {
             detected_patterns.insert(pattern);
+            let sev = if pattern == b"/URI" || pattern == b"/GoToR" || pattern == b"/SubmitForm" {
+                Severity::Low
+            } else {
+                Severity::High
+            };
             findings.push(Finding {
                 id: "FX-FILE-008".to_string(),
-                severity: Severity::High,
+                severity: sev,
                 confidence: Confidence::High,
                 stage: "file_scan".to_string(),
                 location: Location::Path(media_path.clone()),
                 reason: reason.to_string(),
                 evidence: format!(
-                    "PDF structure contains dangerous keyword '{}'",
+                    "PDF structure contains keyword '{}'",
                     String::from_utf8_lossy(pattern)
                 ),
             });
@@ -108,15 +126,20 @@ pub fn inspect_pdf_content_with_policy(
                                 && decomp.windows(pattern.len()).any(|w| w == pattern)
                             {
                                 detected_patterns.insert(pattern);
+                                let sev = if pattern == b"/URI" || pattern == b"/GoToR" || pattern == b"/SubmitForm" {
+                                    Severity::Low
+                                } else {
+                                    Severity::High
+                                };
                                 findings.push(Finding {
                                     id: "FX-FILE-008".to_string(),
-                                    severity: Severity::High,
+                                    severity: sev,
                                     confidence: Confidence::High,
                                     stage: "file_scan".to_string(),
                                     location: Location::Path(media_path.clone()),
                                     reason: reason.to_string(),
                                     evidence: format!(
-                                        "PDF compressed stream contains dangerous keyword '{}'",
+                                        "PDF compressed stream contains keyword '{}'",
                                         String::from_utf8_lossy(pattern)
                                     ),
                                 });
@@ -130,7 +153,16 @@ pub fn inspect_pdf_content_with_policy(
                     break;
                 }
             } else {
-                idx = stream_start + 6;
+                findings.push(Finding {
+                    id: "FX-FILE-008".to_string(),
+                    severity: Severity::Medium,
+                    confidence: Confidence::High,
+                    stage: "file_scan".to_string(),
+                    location: Location::Path(media_path.clone()),
+                    reason: "unclosed stream in PDF document".to_string(),
+                    evidence: format!("stream at offset 0x{stream_start:x} has no matching endstream keyword"),
+                });
+                break;
             }
         } else {
             break;

@@ -249,6 +249,7 @@ Detect the real file type by content first, then apply checks that make sense fo
 - **Archives:** flag path traversal, symlink escapes, and abnormal expansion ratio or depth. A normal zip passes.
 - **Hidden files:** a dotfile alone is `Info`. Flag it only when combined with other signals, such as an autorun trigger.
 - **OS artifacts:** `System Volume Information`, `$RECYCLE.BIN`, `.Trashes`, `.fseventsd`, `lost+found` and similar are recognized as expected. Still scan their contents. Flag only if the contents are anomalous.
+- **Audio and video media files:** legitimate MP3, FLAC, WAV, OGG, M4A, MP4, MKV, AVI, MOV, WEBM and other standard media formats pass unless containing embedded executables or exploit payloads.
 - **Non-ASCII filenames:** Hindi, Punjabi, Chinese, Arabic, and other legitimate scripts are normal. Flag only bidi overrides, control characters, and risky look-alike characters in dangerous positions.
 
 ### 10.3 Confidence and correlation (MVP)
@@ -298,13 +299,15 @@ Two sources of knowledge:
 
 ## 11. Checks in scope
 
-**Device layer:** composite devices (storage plus HID), descriptor anomalies, vendor/product/serial allowlist.
+**Device layer:** composite devices (storage plus HID, storage plus network adapter), descriptor anomalies, vendor/product/serial allowlist and denylist, runtime device identity change detection, hardware TPM 2.0 query.
 
 **Partition and filesystem layer:** hidden partitions, unallocated gaps containing data, protective MBR mismatch, overlapping partitions, unexpected filesystems.
 
-**File layer:** `autorun.inf`, `.desktop`, `.lnk`, hidden files, extension vs magic byte mismatch, double extensions, Unicode RTLO tricks, symlinks escaping the media, archive path traversal, zip bombs, Office macros, PDFs with JavaScript, NTFS alternate data streams, optional offline YARA rules.
+**File layer:** `autorun.inf`, `.desktop`, `.lnk`, hidden files, extension vs magic byte mismatch, double extensions, Unicode RTLO tricks, symlinks escaping the media, archive path traversal, zip bombs, archive recursion across ZIP, TAR, GZIP, and 7z, Office macros (OOXML and legacy OLE2/CFBF), external relationship targets, embedded OLE packages, PDFs with JavaScript and launch actions/hyperlinks, NTFS alternate data streams, pure Rust offline YARA rules, local ClamAV integration, unallocated and raw disk space file carving.
 
-**Manifest and custody:** signed manifest, hash-chained audit log, re-verification on the receiving side.
+**Manifest and custody:** signed manifest, hash-chained audit log, re-verification on the receiving side, complete forensic reports (`ForensicReport`), and reproducible evidence bundles.
+
+**Execution environment:** disposable memory-backed ephemeral workspaces with cryptographic zero wiping on exit.
 
 **Egress:** remnants in unallocated and slack space, wipe verification, metadata detection and stripping.
 
@@ -376,7 +379,7 @@ The TUI is the default interface when run with no subcommand in an interactive t
 - Every check needs a sample image that triggers it and a clean image that does not.
 - Sample images are built by script (`tests/samples/build.py`), kept small, and not committed as opaque blobs where avoidable.
 - Sample targets: hidden partition, autorun payload, zip bomb, path traversal archive, RTLO filename, slack-space remnants, fake composite-device descriptor, symlink escape.
-- Every parser gets a `cargo-fuzz` target. Fuzzing crashes become regression tests.
+- Every parser gets a `cargo-fuzz` target in `fuzz/fuzz_targets/` (covering MBR, GPT, FAT, exFAT, NTFS, ext4, archives, PDF, documents, file carving, and YARA). Fuzzing crashes become regression tests in `tests/`.
 - CI runs the full sample set. A check without a test does not merge.
 - TUI rendering is tested with ratatui `TestBackend`, including a filename with escape sequences and RTLO characters to confirm sanitization.
 - `tests/bypass/` holds evasion attempts (parser differentials, drives that return different data on re-read, forced stage crashes, replayed or expired manifests, hostile filenames on release). CI must fail if any of them ever produces a `PASS`.

@@ -79,6 +79,28 @@ impl Default for EgressPolicy {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClamAvPolicy {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarvePolicy {
+    pub enabled: bool,
+    pub max_carved_files: usize,
+}
+
+impl Default for CarvePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_carved_files: 100,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Policy {
     pub name: String,
@@ -86,9 +108,13 @@ pub struct Policy {
     pub max_partitions: usize,
     pub max_file_size_mb: u64,
     pub allowed_devices: Vec<DeviceFilter>,
+    pub denied_devices: Vec<DeviceFilter>,
     pub allowed_types: Vec<String>,
     pub allow_os_artifacts: bool,
     pub known_good_hashes: Vec<String>,
+    pub yara_rules: Vec<String>,
+    pub clamav: ClamAvPolicy,
+    pub carve: CarvePolicy,
     pub archives: ArchivePolicy,
     pub office: OfficePolicy,
     pub pdf: PdfPolicy,
@@ -107,15 +133,54 @@ impl Policy {
             max_partitions: 1,
             max_file_size_mb: 512,
             allowed_devices: Vec::new(),
+            denied_devices: Vec::new(),
             allowed_types: vec![
                 "pdf".to_string(),
                 "txt".to_string(),
                 "png".to_string(),
                 "jpg".to_string(),
+                "jpeg".to_string(),
+                "gif".to_string(),
+                "bmp".to_string(),
+                "webp".to_string(),
+                "svg".to_string(),
                 "docx".to_string(),
+                "xlsx".to_string(),
+                "pptx".to_string(),
+                "odt".to_string(),
+                "ods".to_string(),
+                "odp".to_string(),
+                "mp3".to_string(),
+                "flac".to_string(),
+                "wav".to_string(),
+                "ogg".to_string(),
+                "m4a".to_string(),
+                "mp4".to_string(),
+                "mkv".to_string(),
+                "avi".to_string(),
+                "mov".to_string(),
+                "webm".to_string(),
+                "zip".to_string(),
+                "7z".to_string(),
+                "tar".to_string(),
+                "gz".to_string(),
+                "bz2".to_string(),
+                "xz".to_string(),
+                "csv".to_string(),
+                "tsv".to_string(),
+                "json".to_string(),
+                "xml".to_string(),
+                "yaml".to_string(),
+                "yml".to_string(),
+                "md".to_string(),
+                "log".to_string(),
+                "sqlite".to_string(),
             ],
             allow_os_artifacts: true,
             known_good_hashes: Vec::new(),
+            yara_rules: Vec::new(),
+            clamav: ClamAvPolicy::default(),
+            carve: CarvePolicy::default(),
             archives: ArchivePolicy::default(),
             office: OfficePolicy::default(),
             pdf: PdfPolicy::default(),

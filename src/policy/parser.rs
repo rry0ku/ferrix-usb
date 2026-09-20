@@ -1,7 +1,7 @@
 use crate::core::StageError;
 use crate::policy::model::{
-    ArchivePolicy, DeviceFilter, EgressPolicy, FilenamePolicy, OfficePolicy, PdfPolicy, Policy,
-    VerdictAction,
+    ArchivePolicy, CarvePolicy, ClamAvPolicy, DeviceFilter, EgressPolicy, FilenamePolicy,
+    OfficePolicy, PdfPolicy, Policy, VerdictAction,
 };
 
 pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
@@ -10,9 +10,13 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
     let mut max_partitions = None;
     let mut max_file_size_mb = None;
     let mut allowed_devices = Vec::new();
+    let mut denied_devices = Vec::new();
     let mut allowed_types = None;
     let mut allow_os_artifacts = None;
     let mut known_good_hashes = None;
+    let mut yara_rules = Vec::new();
+    let mut clamav = ClamAvPolicy::default();
+    let mut carve = CarvePolicy::default();
     let mut archives = ArchivePolicy::default();
     let mut office = OfficePolicy::default();
     let mut pdf = PdfPolicy::default();
@@ -354,6 +358,159 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
                     i += 1;
                 }
             }
+            "denied_devices" => {
+                if val == "[]" {
+                    i += 1;
+                    continue;
+                }
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = if let Some(idx) = next_line.find('#') {
+                        &next_line[..idx]
+                    } else {
+                        next_line
+                    };
+                    if next_trimmed.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    let next_indent = next_trimmed.len() - next_trimmed.trim_start().len();
+                    if next_indent == 0 {
+                        break;
+                    }
+
+                    let line_content = next_trimmed.trim();
+                    if let Some(stripped) = line_content.strip_prefix("- ") {
+                        let mut vendor = String::new();
+                        let mut product = String::new();
+                        let mut serial = None;
+                        let first_pair = stripped.trim();
+                        if !first_pair.is_empty() {
+                            let (k, v) = parse_pair(first_pair)?;
+                            if k == "vendor" {
+                                vendor = v;
+                            } else if k == "product" {
+                                product = v;
+                            } else if k == "serial" {
+                                serial = Some(v);
+                            } else {
+                                return Err(StageError::Parse(format!("unknown device key '{k}'")));
+                            }
+                        }
+
+                        i += 1;
+                        while i < lines.len() {
+                            let sub_line = lines[i];
+                            let sub_trimmed = if let Some(idx) = sub_line.find('#') {
+                                &sub_line[..idx]
+                            } else {
+                                sub_line
+                            };
+                            if sub_trimmed.trim().is_empty() {
+                                i += 1;
+                                continue;
+                            }
+                            let sub_indent = sub_trimmed.len() - sub_trimmed.trim_start().len();
+                            if sub_indent <= next_indent || sub_trimmed.trim().starts_with("- ") {
+                                break;
+                            }
+
+                            let (k, v) = parse_pair(sub_trimmed.trim())?;
+                            if k == "vendor" {
+                                vendor = v;
+                            } else if k == "product" {
+                                product = v;
+                            } else if k == "serial" {
+                                serial = Some(v);
+                            } else {
+                                return Err(StageError::Parse(format!("unknown device key '{k}'")));
+                            }
+                            i += 1;
+                        }
+
+                        denied_devices.push(DeviceFilter {
+                            vendor,
+                            product,
+                            serial,
+                        });
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            "yara_rules" => {
+                let list = parse_inline_or_bullet_list(val, &lines, &mut i)?;
+                yara_rules = list;
+            }
+            "clamav" => {
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = if let Some(idx) = next_line.find('#') {
+                        &next_line[..idx]
+                    } else {
+                        next_line
+                    };
+                    if next_trimmed.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    let next_indent = next_trimmed.len() - next_trimmed.trim_start().len();
+                    if next_indent == 0 {
+                        break;
+                    }
+
+                    let (k, v) = parse_pair(next_trimmed.trim())?;
+                    match k.as_str() {
+                        "enabled" => {
+                            clamav.enabled = parse_bool(&v)?;
+                        }
+                        "socket_path" => {
+                            clamav.socket_path = Some(v);
+                        }
+                        _ => {
+                            return Err(StageError::Parse(format!("unknown clamav key '{k}'")));
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            "carve" => {
+                i += 1;
+                while i < lines.len() {
+                    let next_line = lines[i];
+                    let next_trimmed = if let Some(idx) = next_line.find('#') {
+                        &next_line[..idx]
+                    } else {
+                        next_line
+                    };
+                    if next_trimmed.trim().is_empty() {
+                        i += 1;
+                        continue;
+                    }
+                    let next_indent = next_trimmed.len() - next_trimmed.trim_start().len();
+                    if next_indent == 0 {
+                        break;
+                    }
+
+                    let (k, v) = parse_pair(next_trimmed.trim())?;
+                    match k.as_str() {
+                        "enabled" => {
+                            carve.enabled = parse_bool(&v)?;
+                        }
+                        "max_carved_files" => {
+                            carve.max_carved_files = v.parse::<usize>().map_err(|e| {
+                                StageError::Parse(format!("invalid max_carved_files '{v}': {e}"))
+                            })?;
+                        }
+                        _ => {
+                            return Err(StageError::Parse(format!("unknown carve key '{k}'")));
+                        }
+                    }
+                    i += 1;
+                }
+            }
             "on_medium" => {
                 on_medium = Some(parse_action(val)?);
                 i += 1;
@@ -379,6 +536,7 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
         max_partitions: max_partitions.unwrap_or(1),
         max_file_size_mb: max_file_size_mb.unwrap_or(512),
         allowed_devices,
+        denied_devices,
         allowed_types: allowed_types.unwrap_or_else(|| {
             vec![
                 "pdf".to_string(),
@@ -390,6 +548,9 @@ pub fn parse_policy_str(input: &str) -> Result<Policy, StageError> {
         }),
         allow_os_artifacts: allow_os_artifacts.unwrap_or(true),
         known_good_hashes: known_good_hashes.unwrap_or_default(),
+        yara_rules,
+        clamav,
+        carve,
         archives,
         office,
         pdf,

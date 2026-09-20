@@ -56,8 +56,8 @@ fn test_cli_verify_args_parsing() {
 
     match cli.command {
         Some(Commands::Verify(args)) => {
-            assert_eq!(args.device, PathBuf::from("/dev/sdb"));
-            assert_eq!(args.manifest, PathBuf::from("manifest.json"));
+            assert_eq!(args.target, PathBuf::from("/dev/sdb"));
+            assert_eq!(args.manifest, Some(PathBuf::from("manifest.json")));
             assert_eq!(args.pubkey, Some(PathBuf::from("station.pub")));
         }
         _ => panic!("expected Verify command"),
@@ -153,5 +153,35 @@ fn test_cli_egress_and_keygen_parsing() {
             assert_eq!(args.interval, 5);
         }
         _ => panic!("expected Watch command"),
+    }
+}
+
+#[test]
+fn test_cli_mount_and_restore_parsing() {
+    let cli_mount =
+        Cli::try_parse_from(["ferrix", "mount", "/dev/sdb1", "/mnt/usb", "--rw"]).unwrap();
+    match cli_mount.command {
+        Some(Commands::Mount(args)) => {
+            assert_eq!(args.device, PathBuf::from("/dev/sdb1"));
+            assert_eq!(args.mountpoint, Some(PathBuf::from("/mnt/usb")));
+            assert!(args.rw);
+        }
+        _ => panic!("expected Mount command"),
+    }
+
+    let cli_mount_default = Cli::try_parse_from(["ferrix", "mount", "/dev/sdb1"]).unwrap();
+    match cli_mount_default.command {
+        Some(Commands::Mount(args)) => {
+            assert_eq!(args.device, PathBuf::from("/dev/sdb1"));
+            assert_eq!(args.mountpoint, None);
+            assert!(!args.rw);
+        }
+        _ => panic!("expected Mount command"),
+    }
+
+    let cli_restore = Cli::try_parse_from(["ferrix", "restore"]).unwrap();
+    match cli_restore.command {
+        Some(Commands::Restore) => {}
+        _ => panic!("expected Restore command"),
     }
 }

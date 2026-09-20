@@ -48,6 +48,23 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                             app.selected_device_idx += 1;
                         }
                     }
+                    KeyCode::PageUp => {
+                        app.selected_device_idx = app.selected_device_idx.saturating_sub(5);
+                    }
+                    KeyCode::PageDown => {
+                        if !app.devices.is_empty() {
+                            app.selected_device_idx =
+                                (app.selected_device_idx + 5).min(app.devices.len() - 1);
+                        }
+                    }
+                    KeyCode::Home => {
+                        app.selected_device_idx = 0;
+                    }
+                    KeyCode::End => {
+                        if !app.devices.is_empty() {
+                            app.selected_device_idx = app.devices.len() - 1;
+                        }
+                    }
                     KeyCode::Char('u') => {
                         if let Some(dev) = app.selected_device() {
                             if dev.is_system_drive {
@@ -78,6 +95,15 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                         }
                     }
                     KeyCode::Enter if !app.devices.is_empty() => {
+                        if let Some(dev) = app.selected_device() {
+                            if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/") {
+                                app.status_message = Some(format!(
+                                    "Cannot scan '{}': No media inserted (0 bytes). Insert media or select another device.",
+                                    dev.name
+                                ));
+                                return;
+                            }
+                        }
                         app.screen = Screen::ModeSelect;
                     }
                     _ => {}
@@ -101,7 +127,15 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
         Screen::Results => match key.code {
             KeyCode::Char('q') => app.should_quit = true,
             KeyCode::Esc => app.screen = Screen::DeviceSelect,
-            KeyCode::Char('i') => app.show_info_findings = !app.show_info_findings,
+            KeyCode::Char('i') => {
+                app.show_info_findings = !app.show_info_findings;
+                let max = app.filtered_findings().len();
+                if max == 0 {
+                    app.selected_finding_idx = 0;
+                } else if app.selected_finding_idx >= max {
+                    app.selected_finding_idx = max - 1;
+                }
+            }
             KeyCode::Char('p') => app.screen = Screen::Report,
             KeyCode::Char('r') => {
                 if app.verdict == Some(crate::core::Verdict::Pass) {
@@ -123,6 +157,24 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                 let max = app.filtered_findings().len();
                 if max > 0 && app.selected_finding_idx < max - 1 {
                     app.selected_finding_idx += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                app.selected_finding_idx = app.selected_finding_idx.saturating_sub(10);
+            }
+            KeyCode::PageDown => {
+                let max = app.filtered_findings().len();
+                if max > 0 {
+                    app.selected_finding_idx = (app.selected_finding_idx + 10).min(max - 1);
+                }
+            }
+            KeyCode::Home => {
+                app.selected_finding_idx = 0;
+            }
+            KeyCode::End => {
+                let max = app.filtered_findings().len();
+                if max > 0 {
+                    app.selected_finding_idx = max - 1;
                 }
             }
             _ => {}

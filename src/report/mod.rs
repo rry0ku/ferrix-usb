@@ -1,6 +1,8 @@
+pub mod forensic;
 pub mod html;
 pub mod json;
 
+pub use forensic::*;
 pub use html::*;
 pub use json::*;
 

@@ -1,18 +1,27 @@
 pub mod archives;
+pub mod carve;
+pub mod clamav;
+pub mod documents;
 pub mod filenames;
 pub mod magic;
 pub mod pdf;
+pub mod yara;
 
 pub use archives::*;
+pub use carve::*;
+pub use clamav::*;
+pub use documents::*;
 pub use filenames::*;
 pub use magic::*;
 pub use pdf::*;
+pub use yara::*;
 
 use crate::core::{Finding, ScanContext, Stage, StageError};
 use crate::fs::extract_filesystem_files;
 use crate::policy::Policy;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 
 pub struct FileScanStage {
     pub sector_size: u32,
@@ -63,13 +72,21 @@ impl Stage for FileScanStage {
             ))
         })?;
 
-        let mut total_bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if total_bytes == 0 {
-            if let Ok(end_pos) = file.seek(SeekFrom::End(0)) {
-                total_bytes = end_pos;
-                let _ = file.seek(SeekFrom::Start(0));
+        let total_bytes = crate::disk::snapshot::get_device_or_file_size(&file, scan_path);
+
+        let mut yara_rules = Vec::new();
+        for rule_path_str in &self.policy.yara_rules {
+            let p = Path::new(rule_path_str);
+            if let Ok(rules) = load_yara_rules_from_path(p) {
+                yara_rules.extend(rules);
             }
         }
+
+        let clamav_scanner = if self.policy.clamav.enabled {
+            Some(ClamAvScanner::new(self.policy.clamav.socket_path.clone()))
+        } else {
+            None
+        };
 
         let discovered_files = extract_filesystem_files(&mut file, total_bytes, self.sector_size)?;
         let total_files = discovered_files.len();
@@ -168,16 +185,40 @@ impl Stage for FileScanStage {
                 let is_archive_type = detected == magic::DetectedType::ZipOrOffice
                     || matches!(
                         ext.as_str(),
-                        "zip" | "docx" | "xlsx" | "pptx" | "jar" | "apk"
+                        "zip" | "docx" | "xlsx" | "pptx" | "jar" | "apk" | "tar" | "gz" | "tgz" | "7z"
                     );
                 let is_pdf_type = detected == magic::DetectedType::Pdf || ext == "pdf";
+                let is_ole2_type = header_buf.starts_with(OLE2_MAGIC);
 
-                if (is_archive_type || is_pdf_type) && entry.data_offset.is_some() {
+                let needs_full_buffer = is_archive_type
+                    || is_pdf_type
+                    || is_ole2_type
+                    || !yara_rules.is_empty()
+                    || clamav_scanner.is_some();
+
+                if needs_full_buffer && entry.data_offset.is_some() {
                     let read_len = (entry.size as usize).min(self.max_file_read_size);
                     if let Some(offset) = entry.data_offset {
                         if file.seek(SeekFrom::Start(offset)).is_ok() {
                             let mut full_buf = vec![0u8; read_len];
                             if file.read_exact(&mut full_buf).is_ok() {
+                                if !yara_rules.is_empty() {
+                                    scan_data_with_yara(
+                                        &full_buf,
+                                        &yara_rules,
+                                        &entry.path,
+                                        &mut findings,
+                                    );
+                                }
+
+                                if let Some(ref clam) = clamav_scanner {
+                                    let _ = clam.inspect_and_record(
+                                        &full_buf,
+                                        &entry.path,
+                                        &mut findings,
+                                    );
+                                }
+
                                 if is_archive_type {
                                     inspect_zip_archive_with_policy(
                                         &full_buf,
@@ -186,8 +227,18 @@ impl Stage for FileScanStage {
                                         &self.policy,
                                     );
                                 }
+
                                 if is_pdf_type {
                                     inspect_pdf_content_with_policy(
+                                        &full_buf,
+                                        &entry.path,
+                                        &mut findings,
+                                        &self.policy,
+                                    );
+                                }
+
+                                if is_ole2_type {
+                                    inspect_ole2_compound_file(
                                         &full_buf,
                                         &entry.path,
                                         &mut findings,
@@ -198,6 +249,68 @@ impl Stage for FileScanStage {
                         }
                     }
                 }
+            }
+        }
+
+        if self.policy.carve.enabled && total_bytes > 0 {
+            ctx.event_sink.emit(crate::core::ScanEvent::Progress {
+                stage_id: self.id().to_string(),
+                current: total_files as u64,
+                total: Some(total_files as u64),
+                message: Some("carving files from unallocated and raw space".to_string()),
+            });
+
+            let sec = if self.sector_size == 0 { 512 } else { self.sector_size as u64 };
+            let layout_res = crate::disk::partition::parse_disk_layout(&mut file, total_bytes, self.sector_size);
+
+            let unallocated_ranges: Vec<(u64, u64)> = match layout_res {
+                Ok(ref layout) if !layout.partitions.is_empty() => {
+                    let mut sorted = layout.partitions.clone();
+                    sorted.sort_by_key(|p| p.start_lba);
+                    let mut ranges = Vec::new();
+                    let first_start_byte = sorted[0].start_lba.saturating_mul(sec);
+                    let reserved_prefix = 2048 * sec;
+                    if first_start_byte > reserved_prefix {
+                        ranges.push((reserved_prefix, first_start_byte - reserved_prefix));
+                    }
+                    for i in 0..sorted.len().saturating_sub(1) {
+                        let p1_end_byte = (sorted[i].end_lba.saturating_add(1)).saturating_mul(sec);
+                        let p2_start_byte = sorted[i + 1].start_lba.saturating_mul(sec);
+                        if p2_start_byte > p1_end_byte {
+                            ranges.push((p1_end_byte, p2_start_byte - p1_end_byte));
+                        }
+                    }
+                    let last_end_byte = (sorted.last().unwrap().end_lba.saturating_add(1)).saturating_mul(sec);
+                    if total_bytes > last_end_byte {
+                        ranges.push((last_end_byte, total_bytes - last_end_byte));
+                    }
+                    ranges
+                }
+                _ => {
+                    let mut sector0 = vec![0u8; 512];
+                    let has_fs = if file.seek(SeekFrom::Start(0)).is_ok() && file.read_exact(&mut sector0).is_ok() {
+                        crate::fs::fat::parse_fat_boot_sector(&sector0).is_ok()
+                            || crate::fs::exfat::parse_exfat_boot_sector(&sector0).is_ok()
+                            || crate::fs::ntfs::parse_ntfs_boot_sector(&sector0).is_ok()
+                    } else {
+                        false
+                    };
+                    if has_fs {
+                        Vec::new()
+                    } else {
+                        vec![(0, total_bytes)]
+                    }
+                }
+            };
+
+            if !unallocated_ranges.is_empty() {
+                let _ = carve_unallocated_space(
+                    &mut file,
+                    &unallocated_ranges,
+                    self.policy.carve.max_carved_files,
+                    self.sector_size,
+                    &mut findings,
+                );
             }
         }
 

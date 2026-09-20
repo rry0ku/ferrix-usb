@@ -7,7 +7,6 @@ pub use remnants::*;
 use crate::core::{Finding, ScanContext, Stage, StageError};
 use crate::disk::partition::parse_disk_layout;
 use crate::fs::extract_filesystem_files;
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 pub struct EgressScanStage {
@@ -51,20 +50,17 @@ impl Stage for EgressScanStage {
 
     fn run(&self, ctx: &ScanContext) -> Result<Vec<Finding>, StageError> {
         let scan_path = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
-        let mut file = File::open(scan_path).map_err(|e| {
+        let mut file = crate::disk::snapshot::open_device_or_file_with_retry(
+            scan_path,
+            std::time::Duration::from_secs(3),
+        ).map_err(|e| {
             StageError::Io(format!(
                 "failed to open scan target {}: {e}",
                 scan_path.display()
             ))
         })?;
 
-        let mut total_bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if total_bytes == 0 {
-            if let Ok(end_pos) = file.seek(SeekFrom::End(0)) {
-                total_bytes = end_pos;
-                let _ = file.seek(SeekFrom::Start(0));
-            }
-        }
+        let total_bytes = crate::disk::snapshot::get_device_or_file_size(&file, scan_path);
 
         let layout = parse_disk_layout(&mut file, total_bytes, self.sector_size)?;
         let mut findings = Vec::new();

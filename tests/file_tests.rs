@@ -319,3 +319,129 @@ fn test_zip_path_traversal_windows_drive_and_null_bytes() {
 
     assert!(findings.iter().any(|f| f.id == "FX-FILE-006"));
 }
+
+#[test]
+fn test_carve_pe_signature_validation_rejects_false_positive_mz() {
+    let mut fake_mz = vec![0u8; 1024];
+    fake_mz[0] = b'M';
+    fake_mz[1] = b'Z';
+    fake_mz[2..10].copy_from_slice(b"NOT A PE");
+    assert!(ferrix_usb::scan::carve::detect_carved_header(&fake_mz).is_none());
+
+    let mut valid_pe = vec![0u8; 1024];
+    valid_pe[0] = b'M';
+    valid_pe[1] = b'Z';
+    valid_pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+    valid_pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+    valid_pe[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+    valid_pe[0x86..0x88].copy_from_slice(&3u16.to_le_bytes());
+    let (ftype, _, is_exec) =
+        ferrix_usb::scan::carve::detect_carved_header(&valid_pe).expect("should detect valid PE");
+    assert_eq!(ftype, "Windows PE Executable");
+    assert!(is_exec);
+}
+
+#[test]
+fn test_carve_valid_file_types() {
+    let mut png = vec![0u8; 512];
+    png[0..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    png[12..16].copy_from_slice(b"IHDR");
+    let (ftype, _, is_exec) =
+        ferrix_usb::scan::carve::detect_carved_header(&png).expect("should detect PNG");
+    assert_eq!(ftype, "PNG Image");
+    assert!(!is_exec);
+
+    let mut pdf = vec![0u8; 512];
+    pdf[0..8].copy_from_slice(b"%PDF-1.7");
+    pdf[500..505].copy_from_slice(b"%%EOF");
+    let (ftype, _, is_exec) =
+        ferrix_usb::scan::carve::detect_carved_header(&pdf).expect("should detect PDF");
+    assert_eq!(ftype, "PDF Document");
+    assert!(!is_exec);
+
+    let mut jpeg = vec![0u8; 512];
+    jpeg[0..4].copy_from_slice(b"\xFF\xD8\xFF\xE0");
+    let (ftype, _, is_exec) =
+        ferrix_usb::scan::carve::detect_carved_header(&jpeg).expect("should detect JPEG");
+    assert_eq!(ftype, "JPEG Image");
+    assert!(!is_exec);
+}
+
+#[test]
+fn test_clean_mp3_passes_file_scan() {
+    let mut mp3_data = vec![0u8; 512];
+    mp3_data[0..3].copy_from_slice(b"ID3");
+    mp3_data[3] = 3;
+    mp3_data[4] = 0;
+    mp3_data[5] = 0;
+    mp3_data[6..10].copy_from_slice(&[0, 0, 0, 10]);
+
+    let img = make_fat32_disk_with_file("TRACK", "MP3", &mp3_data, false);
+    let path = write_temp_image("ferrix_test_clean_mp3.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = FileScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    let stage_result = StageResult {
+        stage_id: stage.id().to_string(),
+        status: StageStatus::Ok,
+        findings: findings.clone(),
+    };
+
+    let verdict = resolve_verdict(&[stage.id()], &[stage_result], &findings);
+    assert_eq!(verdict, Verdict::Pass);
+}
+
+#[test]
+fn test_clean_mp4_passes_file_scan() {
+    let mut mp4_data = vec![0u8; 512];
+    mp4_data[0..4].copy_from_slice(&24u32.to_be_bytes());
+    mp4_data[4..8].copy_from_slice(b"ftyp");
+    mp4_data[8..12].copy_from_slice(b"mp42");
+
+    let img = make_fat32_disk_with_file("VIDEO", "MP4", &mp4_data, false);
+    let path = write_temp_image("ferrix_test_clean_mp4.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = FileScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    let stage_result = StageResult {
+        stage_id: stage.id().to_string(),
+        status: StageStatus::Ok,
+        findings: findings.clone(),
+    };
+
+    let verdict = resolve_verdict(&[stage.id()], &[stage_result], &findings);
+    assert_eq!(verdict, Verdict::Pass);
+}
+
+#[test]
+fn test_executable_disguised_as_mp3_quarantines() {
+    let mut pe_data = vec![0u8; 1024];
+    pe_data[0] = 0x4D;
+    pe_data[1] = 0x5A;
+
+    let img = make_fat32_disk_with_file("SONG", "MP3", &pe_data, false);
+    let path = write_temp_image("ferrix_test_fake_mp3.img", &img);
+    let ctx = ScanContext::new(path.clone());
+    let stage = FileScanStage::default();
+
+    let findings = stage.run(&ctx).unwrap();
+    let _ = std::fs::remove_file(path);
+
+    assert!(findings.iter().any(|f| f.id == "FX-FILE-001"));
+
+    let stage_result = StageResult {
+        stage_id: stage.id().to_string(),
+        status: StageStatus::Ok,
+        findings: findings.clone(),
+    };
+
+    let verdict = resolve_verdict(&[stage.id()], &[stage_result], &findings);
+    assert_eq!(verdict, Verdict::Quarantine);
+}
+

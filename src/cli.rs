@@ -123,6 +123,20 @@ pub enum Commands {
         after_help = "Examples:\n  sudo ferrix watch\n  sudo ferrix watch --auto-scan\n  sudo ferrix watch --auto-scan --interval 1"
     )]
     Watch(WatchArgs),
+
+    #[command(
+        about = "Mount an external media partition safely",
+        long_about = "Mounts an externally connected partition (e.g. /dev/sdb1) to a designated mount point. By default, media is mounted read-only with 'ro,nodev,nosuid,noexec' to prevent execution of untrusted binaries.\n\nNote: Primary host OS and internal drives are strictly refused. Mounting requires elevated privileges ('sudo ferrix mount ...').",
+        after_help = "Examples:\n  sudo ferrix mount /dev/sdb1\n  sudo ferrix mount /dev/sdb1 /mnt/usb\n  sudo ferrix mount /dev/sdb1 /mnt/usb --rw"
+    )]
+    Mount(MountArgs),
+
+    #[command(
+        about = "Restore system USB automount defaults and services",
+        long_about = "Restores system-wide USB automount defaults: reloads udev rules, removes any temporary automount blocks, unmasks and restarts udisks2 and autofs, resets USB controller authorizations, and re-enables desktop environment automounting.",
+        after_help = "Examples:\n  sudo ferrix restore"
+    )]
+    Restore,
 }
 
 #[derive(Args, Debug)]
@@ -148,6 +162,48 @@ pub struct ScanArgs {
         long_help = "Logical sector size of the media in bytes. Defaults to 512 bytes."
     )]
     pub sector_size: u32,
+
+    #[arg(
+        long,
+        help = "Path to custom YARA rules file or directory",
+        long_help = "Path to a .yar/.yara rule file or directory containing YARA rules to match against scanned files."
+    )]
+    pub yara: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Enable ClamAV antivirus inspection via local socket or clamscan",
+        long_help = "Enable local offline ClamAV inspection through clamd Unix domain socket or local clamscan CLI."
+    )]
+    pub clamav: bool,
+
+    #[arg(
+        long,
+        help = "Path to local clamd Unix domain socket",
+        long_help = "Path to the clamd Unix domain socket (e.g. /run/clamav/clamd.ctl)."
+    )]
+    pub clamav_socket: Option<String>,
+
+    #[arg(
+        long,
+        help = "Enable deep file carving on unallocated and raw space",
+        long_help = "Scan unallocated sectors and raw disk space to carve hidden files (JPEG, PNG, PDF, ZIP, ELF, PE, SQLite)."
+    )]
+    pub carve: bool,
+
+    #[arg(
+        long,
+        help = "Use a disposable, ephemeral memory-backed inspection environment",
+        long_help = "Acquire and inspect media in an ephemeral, memory-backed workspace that is cryptographically wiped upon exit."
+    )]
+    pub disposable: bool,
+
+    #[arg(
+        long,
+        help = "Generate a reproducible forensic evidence bundle in the output directory",
+        long_help = "Create an evidence/ directory containing device.json, partitions.json, files.json, findings.json, manifest.json, and manifest.sig."
+    )]
+    pub bundle: bool,
 }
 
 #[derive(Args, Debug)]
@@ -178,10 +234,10 @@ pub struct EgressArgs {
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
     #[arg(
-        help = "Path to block device or disk image file",
-        long_help = "Path to the target device or disk image to verify against the signed manifest. Physical block devices require elevated privileges (run with 'sudo')."
+        help = "Path to block device, disk image, or signed report.json file",
+        long_help = "Path to the target device, disk image, or standalone signed report.json file to verify. If a report.json is provided, verifies its station signature directly."
     )]
-    pub device: PathBuf,
+    pub target: PathBuf,
 
     #[arg(
         short = 'm',
@@ -189,13 +245,13 @@ pub struct VerifyArgs {
         help = "Path to signed manifest file to verify against",
         long_help = "Path to the manifest.json file containing the Ed25519 signature, BLAKE3 device hash, partition layout hash, and file checksums."
     )]
-    pub manifest: PathBuf,
+    pub manifest: Option<PathBuf>,
 
     #[arg(
         short = 'k',
         long,
         help = "Path to station public key (station.pub)",
-        long_help = "Path to the station Ed25519 public key file used to verify the manifest's digital signature. Defaults to looking in the manifest's directory or the current directory."
+        long_help = "Path to the station Ed25519 public key file used to verify the manifest or report digital signature. Defaults to looking in the manifest's directory or the current directory."
     )]
     pub pubkey: Option<PathBuf>,
 }
@@ -233,6 +289,13 @@ pub struct ReportArgs {
         long_help = "Generate a self-contained, offline HTML report with styled findings tables and integrity hashes."
     )]
     pub html: bool,
+
+    #[arg(
+        long,
+        help = "Generate a reproducible forensic evidence bundle in the output directory",
+        long_help = "Create an evidence/ directory containing device.json, partitions.json, files.json, findings.json, manifest.json, and manifest.sig."
+    )]
+    pub bundle: bool,
 }
 
 #[derive(Args, Debug)]
@@ -313,4 +376,26 @@ pub struct WatchArgs {
         long_help = "Frequency in seconds at which the watcher inspects /sys/bus/usb/devices/ for newly inserted media."
     )]
     pub interval: u64,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct MountArgs {
+    #[arg(
+        help = "Path to block device or partition to mount (e.g. /dev/sdb1)",
+        long_help = "Path to the externally connected block device or partition (e.g. /dev/sdb1). Primary host OS drives and internal drives are strictly refused."
+    )]
+    pub device: PathBuf,
+
+    #[arg(
+        help = "Destination mount directory (defaults to /media/<user>/<dev> or /mnt/<dev>)",
+        long_help = "Target directory where the media will be mounted. Created automatically if it does not exist. Defaults to /media/<user>/<dev> if running under sudo or /mnt/<dev>."
+    )]
+    pub mountpoint: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Mount read-write instead of the secure read-only default (ro,nodev,nosuid,noexec)",
+        long_help = "Mount the filesystem with read-write permissions ('rw,nodev,nosuid'). By default, ferrix mounts read-only ('ro,nodev,nosuid,noexec') to protect the system."
+    )]
+    pub rw: bool,
 }
