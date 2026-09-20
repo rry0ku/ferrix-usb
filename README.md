@@ -13,7 +13,7 @@
 
 **Offline Vetting and Verification Station for Removable Media**
 
-*Inspect hardware descriptors, partition tables, and filesystem structures before media crosses security boundaries — without ever mounting the media.*
+*Zero-mount inspection from hardware to files.*
 
 [Key Features](#key-features) •
 [Operating Model](#operating-model) •
