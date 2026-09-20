@@ -50,18 +50,32 @@ impl Stage for DeviceScanStage {
         });
 
         let mounts = check_device_mounts(&ctx.target_path);
-        for (dev, mp) in mounts {
+        if is_system_device(&ctx.target_path) {
             findings.push(Finding {
                 id: "FX-DEV-004".to_string(),
                 severity: crate::core::Severity::High,
                 confidence: crate::core::Confidence::High,
                 stage: self.id().to_string(),
                 location: crate::core::Location::Device,
-                reason: "media is currently mounted by operating system".to_string(),
-                evidence: format!(
-                    "device '{dev}' is mounted at '{mp}' - kernel filesystem drivers have parsed untrusted data"
-                ),
+                reason: "host OS system drive contains active root or system mount points"
+                    .to_string(),
+                evidence: "target device contains active host system mount points ('/')"
+                    .to_string(),
             });
+        } else {
+            for (dev, mp) in mounts {
+                findings.push(Finding {
+                    id: "FX-DEV-004".to_string(),
+                    severity: crate::core::Severity::High,
+                    confidence: crate::core::Confidence::High,
+                    stage: self.id().to_string(),
+                    location: crate::core::Location::Device,
+                    reason: "media is currently mounted by operating system".to_string(),
+                    evidence: format!(
+                        "device '{dev}' is mounted at '{mp}' - kernel filesystem drivers have parsed untrusted data"
+                    ),
+                });
+            }
         }
 
         ctx.event_sink.emit(crate::core::ScanEvent::Progress {

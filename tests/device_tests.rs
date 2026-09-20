@@ -168,3 +168,39 @@ fn test_device_stage_with_mock_file() {
     assert_eq!(findings[0].id, "FX-DEV-001");
     assert_eq!(findings[0].severity, Severity::Critical);
 }
+
+#[test]
+fn test_system_device_and_mount_point_checks() {
+    use ferrix_usb::device::{is_system_device, is_system_mount_point, unmount_device_partitions};
+    use std::path::Path;
+
+    assert!(is_system_mount_point("/"));
+    assert!(is_system_mount_point("/boot"));
+    assert!(is_system_mount_point("/boot/efi"));
+    assert!(is_system_mount_point("/etc"));
+    assert!(is_system_mount_point("/usr"));
+    assert!(is_system_mount_point("/var"));
+    assert!(is_system_mount_point("/home"));
+    assert!(is_system_mount_point("/root"));
+    assert!(!is_system_mount_point("/media/usb"));
+    assert!(!is_system_mount_point("/mnt/external"));
+    assert!(!is_system_mount_point("/run/media/dex/drive"));
+
+    assert!(!is_system_device(Path::new(
+        "/dev/nonexistent_dummy_device_99999"
+    )));
+    assert!(!is_system_device(Path::new("")));
+
+    if let Ok(content) = std::fs::read_to_string("/proc/mounts") {
+        for line in content.lines() {
+            let mut parts = line.split(' ');
+            if let (Some(dev), Some(mp)) = (parts.next(), parts.next()) {
+                if is_system_mount_point(mp) && dev.starts_with("/dev/") {
+                    assert!(is_system_device(Path::new(dev)));
+                    assert!(unmount_device_partitions(Path::new(dev)).is_err());
+                    break;
+                }
+            }
+        }
+    }
+}

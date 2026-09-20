@@ -50,23 +50,29 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                     }
                     KeyCode::Char('u') => {
                         if let Some(dev) = app.selected_device() {
-                            let path = dev.path.clone();
-                            match crate::device::auth::unmount_device_partitions(&path) {
-                                Ok(unmounted) => {
-                                    if unmounted.is_empty() {
-                                        app.status_message =
-                                            Some("Device is not mounted.".to_string());
-                                    } else {
-                                        app.status_message = Some(format!(
-                                            "Successfully unmounted: {}",
-                                            unmounted.join(", ")
-                                        ));
-                                        app.refresh_devices();
+                            if dev.is_system_drive {
+                                app.status_message = Some(
+                                    "Cannot unmount: host system drive is protected.".to_string(),
+                                );
+                            } else {
+                                let path = dev.path.clone();
+                                match crate::device::auth::unmount_device_partitions(&path) {
+                                    Ok(unmounted) => {
+                                        if unmounted.is_empty() {
+                                            app.status_message =
+                                                Some("Device is not mounted.".to_string());
+                                        } else {
+                                            app.status_message = Some(format!(
+                                                "Successfully unmounted: {}",
+                                                unmounted.join(", ")
+                                            ));
+                                            app.refresh_devices();
+                                        }
                                     }
-                                }
-                                Err(e) => {
-                                    app.status_message =
-                                        Some(format!("Failed to unmount device: {e}"));
+                                    Err(e) => {
+                                        app.status_message =
+                                            Some(format!("Failed to unmount device: {e}"));
+                                    }
                                 }
                             }
                         }

@@ -125,7 +125,9 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &App) {
                 format!("{size_mb} MB")
             };
 
-            let mount_tag = if !dev.mount_points.is_empty() {
+            let mount_tag = if dev.is_system_drive {
+                " [HOST OS DRIVE - PROTECTED]".to_string()
+            } else if !dev.mount_points.is_empty() {
                 format!(" [MOUNTED at {} - UNSAFE]", dev.mount_points.join(", "))
             } else {
                 " [Unmounted]".to_string()
@@ -146,7 +148,11 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &App) {
             );
 
             let style = if is_selected {
-                if !dev.mount_points.is_empty() {
+                if dev.is_system_drive {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if !dev.mount_points.is_empty() {
                     Style::default()
                         .fg(Color::LightRed)
                         .add_modifier(Modifier::BOLD)
@@ -155,6 +161,8 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &App) {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
                 }
+            } else if dev.is_system_drive {
+                Style::default().fg(Color::DarkGray)
             } else if !dev.mount_points.is_empty() {
                 Style::default().fg(Color::Red)
             } else {

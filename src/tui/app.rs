@@ -32,6 +32,7 @@ pub struct DeviceEntry {
     pub model: String,
     pub serial: String,
     pub is_removable: bool,
+    pub is_system_drive: bool,
     pub mount_points: Vec<String>,
 }
 
@@ -170,6 +171,7 @@ impl App {
                     .unwrap_or_default();
 
                 let dev_path = PathBuf::from(format!("/dev/{name}"));
+                let is_system_drive = crate::device::auth::is_system_device(&dev_path);
                 let mount_points = crate::device::auth::check_device_mounts(&dev_path)
                     .into_iter()
                     .map(|(_, mp)| mp)
@@ -183,6 +185,7 @@ impl App {
                     model,
                     serial,
                     is_removable,
+                    is_system_drive,
                     mount_points,
                 });
             }
@@ -208,6 +211,7 @@ impl App {
                             model: "Disk Image".to_string(),
                             serial: String::new(),
                             is_removable: true,
+                            is_system_drive: false,
                             mount_points: Vec::new(),
                         });
                     }
@@ -249,6 +253,7 @@ impl App {
                                     model,
                                     serial,
                                     is_removable: true,
+                                    is_system_drive: false,
                                     mount_points: Vec::new(),
                                 });
                             }
