@@ -29,8 +29,11 @@ pub fn build_scanner_seccomp_filter() -> Result<BpfProgram, SeccompError> {
         libc::SYS_writev,
         libc::SYS_fstat,
         libc::SYS_newfstatat,
+        libc::SYS_statx,
         libc::SYS_getdents64,
         libc::SYS_openat,
+        libc::SYS_readlink,
+        libc::SYS_readlinkat,
         libc::SYS_dup,
         libc::SYS_dup2,
         libc::SYS_dup3,
@@ -55,12 +58,14 @@ pub fn build_scanner_seccomp_filter() -> Result<BpfProgram, SeccompError> {
         libc::SYS_getgid,
         libc::SYS_getegid,
         libc::SYS_sched_yield,
+        libc::SYS_sched_getaffinity,
         libc::SYS_clock_gettime,
         libc::SYS_gettimeofday,
         libc::SYS_nanosleep,
         libc::SYS_clock_nanosleep,
         libc::SYS_restart_syscall,
         libc::SYS_clone,
+        libc::SYS_clone3,
         libc::SYS_set_robust_list,
         libc::SYS_prlimit64,
         libc::SYS_poll,
@@ -71,6 +76,14 @@ pub fn build_scanner_seccomp_filter() -> Result<BpfProgram, SeccompError> {
         libc::SYS_epoll_ctl,
         libc::SYS_epoll_wait,
         libc::SYS_epoll_pwait,
+        libc::SYS_getrandom,
+        libc::SYS_rseq,
+        libc::SYS_tgkill,
+        libc::SYS_pipe2,
+        libc::SYS_eventfd2,
+        libc::SYS_getrusage,
+        libc::SYS_faccessat,
+        libc::SYS_faccessat2,
     ];
 
     for sys in allowed_syscalls {
@@ -91,7 +104,7 @@ pub fn build_scanner_seccomp_filter() -> Result<BpfProgram, SeccompError> {
     let filter = SeccompFilter::new(
         rules,
         SeccompAction::Errno(libc::EPERM as u32),
-        SeccompAction::KillProcess,
+        SeccompAction::Allow,
         target_arch,
     )
     .map_err(|e| SeccompError::BuildFilter(format!("{e:?}")))?;

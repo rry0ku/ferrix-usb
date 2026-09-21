@@ -645,14 +645,20 @@ pub fn cleanup_lingering_station_lockdown() {
 
     if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
         for entry_res in entries.flatten() {
-            let name = entry_res.file_name().to_string_lossy().to_string();
-            if name.starts_with("usb") {
-                let auth_def = entry_res.path().join("authorized_default");
-                if auth_def.exists() {
-                    if let Ok(val) = fs::read_to_string(&auth_def) {
-                        if val.trim() == "0" {
-                            let _ = fs::write(&auth_def, b"1\n");
-                        }
+            let path = entry_res.path();
+            let auth_def = path.join("authorized_default");
+            if auth_def.exists() {
+                if let Ok(val) = fs::read_to_string(&auth_def) {
+                    if val.trim() == "0" {
+                        let _ = fs::write(&auth_def, b"1\n");
+                    }
+                }
+            }
+            let auth = path.join("authorized");
+            if auth.exists() {
+                if let Ok(val) = fs::read_to_string(&auth) {
+                    if val.trim() == "0" {
+                        let _ = fs::write(&auth, b"1\n");
                     }
                 }
             }
@@ -685,9 +691,26 @@ pub fn cleanup_lingering_station_lockdown() {
                         }
                     }
                 }
+                if let Ok(sub_entries) = fs::read_dir(&path) {
+                    for sub_res in sub_entries.flatten() {
+                        let sub_ro = sub_res.path().join("ro");
+                        if sub_ro.exists() {
+                            if let Ok(val) = fs::read_to_string(&sub_ro) {
+                                if val.trim() == "1" {
+                                    let _ = fs::write(&sub_ro, b"0\n");
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+
+    let _ = std::process::Command::new("udevadm")
+        .args(["trigger", "--subsystem-match=block"])
+        .stderr(Stdio::null())
+        .status();
 
     for temp_dir in [Path::new("/tmp"), Path::new("/var/tmp")] {
         if let Ok(entries) = fs::read_dir(temp_dir) {
@@ -723,22 +746,23 @@ pub fn register_exit_and_signal_cleanup() {
     }
     unsafe {
         libc::atexit(exit_cleanup_handler);
-        libc::signal(
+        for sig in [
             libc::SIGINT,
-            signal_cleanup_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
             libc::SIGTERM,
-            signal_cleanup_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
             libc::SIGHUP,
-            signal_cleanup_handler as *const () as libc::sighandler_t,
-        );
-        libc::signal(
             libc::SIGQUIT,
-            signal_cleanup_handler as *const () as libc::sighandler_t,
-        );
+            libc::SIGSYS,
+            libc::SIGABRT,
+            libc::SIGBUS,
+            libc::SIGSEGV,
+            libc::SIGFPE,
+            libc::SIGILL,
+        ] {
+            libc::signal(
+                sig,
+                signal_cleanup_handler as *const () as libc::sighandler_t,
+            );
+        }
     }
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

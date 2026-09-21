@@ -33,3 +33,32 @@ fn test_apply_landlock_dry_run() {
             || status == LandlockStatus::NotSupported
     );
 }
+
+#[test]
+fn test_apply_seccomp_execution_and_network_block() {
+    use ferrix_usb::sandbox::{apply_seccomp, SeccompStatus};
+    use nix::sys::wait::waitpid;
+    use nix::unistd::{fork, ForkResult};
+
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            let status = waitpid(child, None).expect("waitpid failed");
+            assert_eq!(status, nix::sys::wait::WaitStatus::Exited(child, 0));
+        }
+        Ok(ForkResult::Child) => {
+            let res = apply_seccomp();
+            if let Ok(SeccompStatus::Enforced) = res {
+                let mut buf = [0u8; 16];
+                let _ =
+                    unsafe { libc::getrandom(buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
+                let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+                if sock >= 0 {
+                    unsafe { libc::close(sock) };
+                    unsafe { libc::_exit(1) };
+                }
+            }
+            unsafe { libc::_exit(0) };
+        }
+        Err(_) => {}
+    }
+}
