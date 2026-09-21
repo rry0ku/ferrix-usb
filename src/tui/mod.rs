@@ -42,5 +42,11 @@ pub fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
+    if let Some(ref p) = app.snapshot_path {
+        if p.exists() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
     Ok(())
 }

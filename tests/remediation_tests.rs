@@ -144,6 +144,8 @@ fn test_fat_recursive_subdirectory_traversal() {
     let file_data_offset = fs_offset + (first_data_sector + (4 - 2) * 8) * 512;
     buf[file_data_offset] = 0x4D;
     buf[file_data_offset + 1] = 0x5A;
+    buf[file_data_offset + 0x3c] = 0x80;
+    buf[file_data_offset + 0x80..file_data_offset + 0x84].copy_from_slice(b"PE\0\0");
 
     let mut cursor = Cursor::new(&buf);
     let files = extract_filesystem_files(&mut cursor, buf.len() as u64, 512).unwrap();

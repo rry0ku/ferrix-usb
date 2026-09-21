@@ -565,6 +565,8 @@ fn test_policy_blocks_executable_disguised_as_mp3() {
     let mut pe_data = vec![0u8; 512];
     pe_data[0] = 0x4D;
     pe_data[1] = 0x5A;
+    pe_data[0x3c] = 0x80;
+    pe_data[0x80..0x84].copy_from_slice(b"PE\0\0");
 
     let img = make_fat32_image(1, 0x0C, "SONG", "MP3", &pe_data);
     let path = write_temp_file("ferrix_test_policy_disguised_mp3.img", &img);

@@ -185,3 +185,47 @@ fn test_cli_mount_and_restore_parsing() {
         _ => panic!("expected Restore command"),
     }
 }
+
+#[test]
+fn test_cli_clean_parsing() {
+    let cli = Cli::try_parse_from(["ferrix", "clean"]).unwrap();
+    match cli.command {
+        Some(Commands::Clean(args)) => {
+            assert_eq!(args.dir, None);
+        }
+        _ => panic!("expected Clean command"),
+    }
+
+    let cli_dir = Cli::try_parse_from(["ferrix", "clean", "-d", "/tmp/snapshots"]).unwrap();
+    match cli_dir.command {
+        Some(Commands::Clean(args)) => {
+            assert_eq!(args.dir, Some(PathBuf::from("/tmp/snapshots")));
+        }
+        _ => panic!("expected Clean command"),
+    }
+}
+
+#[test]
+fn test_clean_all_snapshots_function() {
+    use ferrix_usb::disk::clean_all_snapshots;
+    let temp_dir = std::env::temp_dir().join(format!("test_clean_snaps_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    let dummy_snap = temp_dir.join("ferrix-snapshot-99999.img");
+    let _ = std::fs::write(&dummy_snap, b"SNAPSHOT DATA");
+
+    let dummy_ws = temp_dir.join("ferrix-workspace-99999");
+    let _ = std::fs::create_dir_all(&dummy_ws);
+    let _ = std::fs::write(dummy_ws.join("file.bin"), b"MORE DATA");
+
+    assert!(dummy_snap.exists());
+    assert!(dummy_ws.exists());
+
+    let report = clean_all_snapshots(std::slice::from_ref(&temp_dir));
+    assert!(!dummy_snap.exists());
+    assert!(!dummy_ws.exists());
+    assert!(report.total_bytes_freed >= 22);
+    assert!(report.deleted_files.iter().any(|(p, _)| p == &dummy_snap));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

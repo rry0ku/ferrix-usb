@@ -555,10 +555,18 @@ impl Stage for PolicyScanStage {
                 false
             };
 
+            let ext = filename.rsplit('.').next().unwrap_or("");
+            let expected_class = crate::scan::magic::expected_risk_class_from_extension(ext);
             let detected = if has_content {
                 detect_content_type(&header_buf)
+            } else if entry.size == 0 {
+                if expected_class == RiskClass::Text || ext.is_empty() {
+                    DetectedType::PlainText
+                } else {
+                    DetectedType::Unknown
+                }
             } else {
-                DetectedType::PlainText
+                DetectedType::Unknown
             };
 
             let is_os_artifact = self.policy.allow_os_artifacts && is_os_artifact_path(&filename);

@@ -139,3 +139,58 @@ fn test_terminal_string_sanitization_osc_and_dcs() {
     let sanitized_dcs = sanitize_terminal_string(dcs);
     assert_eq!(sanitized_dcs, "AfterDcs");
 }
+
+#[test]
+fn test_app_eta_calculation_and_smoothing() {
+    use ferrix_usb::tui::app::ScanEvent;
+    use std::sync::mpsc::channel;
+
+    let mut app = App::default();
+    let (tx, rx) = channel();
+    app.rx_event = Some(rx);
+
+    tx.send(ScanEvent::StageStarted {
+        name: "Acquiring Snapshot".to_string(),
+        index: 1,
+        total: 4,
+    })
+    .unwrap();
+    app.poll_scan_events();
+    assert!(app.stage_start_time.is_some());
+
+    app.last_progress_time =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(600));
+    tx.send(ScanEvent::Progress {
+        stage_id: "snapshot".to_string(),
+        current: 10 * 1024 * 1024,
+        total: Some(100 * 1024 * 1024),
+        message: None,
+    })
+    .unwrap();
+    app.poll_scan_events();
+
+    assert!(app.transfer_speed_bps > 0.0);
+    assert!(app.estimated_eta_seconds.is_some());
+
+    tx.send(ScanEvent::StageStarted {
+        name: "Partition inspection".to_string(),
+        index: 2,
+        total: 4,
+    })
+    .unwrap();
+    app.poll_scan_events();
+
+    assert_eq!(app.transfer_speed_bps, 0.0);
+    assert_eq!(app.estimated_eta_seconds, None);
+
+    tx.send(ScanEvent::Progress {
+        stage_id: "partition".to_string(),
+        current: 2,
+        total: Some(2),
+        message: None,
+    })
+    .unwrap();
+    app.poll_scan_events();
+
+    assert_eq!(app.estimated_eta_seconds, Some(0));
+}

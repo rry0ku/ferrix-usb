@@ -82,6 +82,7 @@ pub struct App {
     pub findings_list_state: ListState,
     pub device_list_state: ListState,
     pub scan_start_time: Option<std::time::Instant>,
+    pub stage_start_time: Option<std::time::Instant>,
     pub last_progress_bytes: u64,
     pub last_progress_time: Option<std::time::Instant>,
     pub transfer_speed_bps: f64,
@@ -124,6 +125,7 @@ impl Default for App {
             findings_list_state: ListState::default(),
             device_list_state: ListState::default(),
             scan_start_time: None,
+            stage_start_time: None,
             last_progress_bytes: 0,
             last_progress_time: None,
             transfer_speed_bps: 0.0,
@@ -191,17 +193,7 @@ impl App {
                     .map(|sectors| sectors * 512)
                     .unwrap_or(0);
 
-                let vendor = fs::read_to_string(sys_path.join("device/vendor"))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
-
-                let model = fs::read_to_string(sys_path.join("device/model"))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
-
-                let serial = fs::read_to_string(sys_path.join("device/serial"))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
+                let (vendor, model, serial) = crate::device::read_block_device_identity(&dev_path);
 
                 let is_system_drive = false;
                 let mount_points = crate::device::auth::check_device_mounts(&dev_path)
@@ -354,6 +346,7 @@ impl App {
         self.current_stage_index = 0;
         self.total_stages = 0;
         self.scan_start_time = Some(std::time::Instant::now());
+        self.stage_start_time = Some(std::time::Instant::now());
         self.last_progress_bytes = 0;
         self.last_progress_time = Some(std::time::Instant::now());
         self.transfer_speed_bps = 0.0;
@@ -745,13 +738,12 @@ impl App {
                         } else {
                             self.scan_progress_pct = 0;
                         }
-                        if let Some(start_time) = self.scan_start_time {
-                            let elapsed = start_time.elapsed().as_secs_f64();
-                            if self.scan_progress_pct > 0 && self.scan_progress_pct < 100 {
-                                let total_est = elapsed / (self.scan_progress_pct as f64 / 100.0);
-                                let eta = (total_est - elapsed).max(0.0);
-                                self.estimated_eta_seconds = Some(eta as u64);
-                            }
+                        self.stage_start_time = Some(std::time::Instant::now());
+                        self.last_progress_bytes = 0;
+                        self.last_progress_time = Some(std::time::Instant::now());
+                        if index > 1 {
+                            self.transfer_speed_bps = 0.0;
+                            self.estimated_eta_seconds = None;
                         }
                         self.scan_activity_log
                             .push(format!("[Stage {index}/{total}] Started: {name}"));
@@ -774,28 +766,71 @@ impl App {
                                 if stage_id == "snapshot" {
                                     if let Some(last_time) = self.last_progress_time {
                                         let dt = last_time.elapsed().as_secs_f64();
-                                        if dt >= 0.25 {
+                                        if dt >= 0.5 {
                                             let bytes_delta =
                                                 current.saturating_sub(self.last_progress_bytes);
-                                            let speed = (bytes_delta as f64) / dt;
-                                            if speed > 0.0 {
-                                                self.transfer_speed_bps = speed;
+                                            let instant_speed = (bytes_delta as f64) / dt;
+                                            let stage_elapsed = self
+                                                .stage_start_time
+                                                .map(|t| t.elapsed().as_secs_f64())
+                                                .unwrap_or(dt);
+                                            let cumulative_speed =
+                                                if stage_elapsed > 0.5 && current > 0 {
+                                                    (current as f64) / stage_elapsed
+                                                } else {
+                                                    instant_speed
+                                                };
+
+                                            if self.transfer_speed_bps <= 0.0 {
+                                                self.transfer_speed_bps = instant_speed;
+                                            } else {
+                                                let ema = 0.75 * self.transfer_speed_bps
+                                                    + 0.25 * instant_speed;
+                                                self.transfer_speed_bps =
+                                                    0.7 * ema + 0.3 * cumulative_speed;
+                                            }
+
+                                            if self.transfer_speed_bps > 1024.0 {
                                                 let remaining_bytes = tot.saturating_sub(current);
-                                                let eta = (remaining_bytes as f64) / speed;
-                                                self.estimated_eta_seconds = Some(eta as u64);
+                                                let raw_eta = (remaining_bytes as f64)
+                                                    / self.transfer_speed_bps;
+                                                let new_eta = raw_eta.round() as u64;
+                                                self.estimated_eta_seconds =
+                                                    Some(match self.estimated_eta_seconds {
+                                                        Some(prev) if prev > 0 && new_eta > 0 => {
+                                                            if new_eta > prev + 5 {
+                                                                prev + 2
+                                                            } else if prev > new_eta + 5 {
+                                                                prev - 2
+                                                            } else {
+                                                                new_eta
+                                                            }
+                                                        }
+                                                        _ => new_eta,
+                                                    });
                                             }
                                             self.last_progress_bytes = current;
                                             self.last_progress_time =
                                                 Some(std::time::Instant::now());
                                         }
                                     }
-                                } else if let Some(start_time) = self.scan_start_time {
-                                    let elapsed = start_time.elapsed().as_secs_f64();
-                                    if self.scan_progress_pct > 0 && self.scan_progress_pct < 100 {
-                                        let total_est =
-                                            elapsed / (self.scan_progress_pct as f64 / 100.0);
-                                        let eta = (total_est - elapsed).max(0.0);
-                                        self.estimated_eta_seconds = Some(eta as u64);
+                                } else {
+                                    self.transfer_speed_bps = 0.0;
+                                    let stage_elapsed = self
+                                        .stage_start_time
+                                        .map(|t| t.elapsed().as_secs_f64())
+                                        .unwrap_or(0.0);
+                                    if stage_elapsed >= 0.5 && current > 0 {
+                                        let rate = (current as f64) / stage_elapsed;
+                                        if rate > 0.0 {
+                                            let remaining = tot.saturating_sub(current) as f64;
+                                            self.estimated_eta_seconds =
+                                                Some((remaining / rate).round() as u64);
+                                        }
+                                    } else if current == tot {
+                                        self.estimated_eta_seconds = Some(0);
+                                    } else {
+                                        self.estimated_eta_seconds = Some(1);
                                     }
                                 }
                             }
@@ -825,11 +860,15 @@ impl App {
                             res.stage_id,
                             res.findings.len()
                         ));
-                        self.completed_stages.push(res);
+                        self.completed_stages.push(res.clone());
                         if self.total_stages > 0 && self.current_stage_index > 0 {
                             self.scan_progress_pct =
                                 ((self.current_stage_index as f32 / self.total_stages as f32)
                                     * 100.0) as u16;
+                        }
+                        if res.stage_id == "snapshot" {
+                            self.transfer_speed_bps = 0.0;
+                            self.estimated_eta_seconds = None;
                         }
                     }
                     ScanEvent::ScanFinished {
@@ -940,7 +979,26 @@ impl App {
                 .unwrap_or_default()
                 .as_secs()
                 + 86400,
-            device_identity: None,
+            device_identity: {
+                self.selected_device()
+                    .map(|dev| crate::manifest::DeviceIdentity {
+                        vendor: if dev.vendor.is_empty() {
+                            None
+                        } else {
+                            Some(dev.vendor.clone())
+                        },
+                        product: if dev.model.is_empty() {
+                            None
+                        } else {
+                            Some(dev.model.clone())
+                        },
+                        serial: if dev.serial.is_empty() {
+                            None
+                        } else {
+                            Some(dev.serial.clone())
+                        },
+                    })
+            },
             device_size_bytes: 0,
             device_hash: String::new(),
             partition_layout_hash: String::new(),

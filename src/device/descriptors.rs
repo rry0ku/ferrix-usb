@@ -101,7 +101,9 @@ pub fn read_usb_device_from_sysfs(sysfs_path: &Path) -> Result<UsbDevice, StageE
 pub fn find_usb_device_sysfs_for_block_device(block_dev: &Path) -> Option<PathBuf> {
     let dev_name = block_dev.file_name()?.to_str()?;
     let sys_block = Path::new("/sys/class/block").join(dev_name);
-    let canonical = fs::canonicalize(sys_block).ok()?;
+    let canonical = fs::canonicalize(&sys_block)
+        .or_else(|_| fs::canonicalize(Path::new("/sys/block").join(dev_name)))
+        .ok()?;
 
     let mut current = canonical.parent();
     while let Some(dir) = current {
@@ -111,4 +113,109 @@ pub fn find_usb_device_sysfs_for_block_device(block_dev: &Path) -> Option<PathBu
         current = dir.parent();
     }
     None
+}
+
+pub fn read_block_device_serial(block_dev: &Path) -> Option<String> {
+    let dev_name = block_dev.file_name()?.to_str()?;
+    let sys_block = Path::new("/sys/class/block").join(dev_name);
+    let direct_sys = Path::new("/sys/block").join(dev_name);
+
+    if let Ok(s) = fs::read_to_string(sys_block.join("device/serial")) {
+        let trimmed = s.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+
+    if let Ok(s) = fs::read_to_string(direct_sys.join("device/serial")) {
+        let trimmed = s.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+
+    if let Some(usb_dir) = find_usb_device_sysfs_for_block_device(block_dev) {
+        if let Ok(s) = fs::read_to_string(usb_dir.join("serial")) {
+            let trimmed = s.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+
+    let canonical = fs::canonicalize(&sys_block)
+        .or_else(|_| fs::canonicalize(&direct_sys))
+        .ok()?;
+
+    let mut current = canonical.parent();
+    while let Some(dir) = current {
+        let serial_file = dir.join("serial");
+        if serial_file.exists() {
+            if let Ok(s) = fs::read_to_string(&serial_file) {
+                let trimmed = s.trim().to_string();
+                let is_root_hub = dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("usb") && n[3..].chars().all(|c| c.is_ascii_digit()))
+                    .unwrap_or(false);
+                if !trimmed.is_empty() && !is_root_hub {
+                    return Some(trimmed);
+                }
+            }
+        }
+        current = dir.parent();
+    }
+
+    None
+}
+
+pub fn read_block_device_identity(block_dev: &Path) -> (String, String, String) {
+    let dev_name = match block_dev.file_name().and_then(|s| s.to_str()) {
+        Some(n) => n,
+        None => return (String::new(), String::new(), String::new()),
+    };
+
+    let sys_block = Path::new("/sys/class/block").join(dev_name);
+    let direct_sys = Path::new("/sys/block").join(dev_name);
+
+    let mut vendor = fs::read_to_string(sys_block.join("device/vendor"))
+        .or_else(|_| fs::read_to_string(direct_sys.join("device/vendor")))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let mut model = fs::read_to_string(sys_block.join("device/model"))
+        .or_else(|_| fs::read_to_string(direct_sys.join("device/model")))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let mut serial = read_block_device_serial(block_dev).unwrap_or_default();
+
+    if let Some(usb_dir) = find_usb_device_sysfs_for_block_device(block_dev) {
+        if vendor.is_empty() {
+            if let Ok(m) = fs::read_to_string(usb_dir.join("manufacturer")) {
+                let trimmed = m.trim().to_string();
+                if !trimmed.is_empty() {
+                    vendor = trimmed;
+                }
+            }
+        }
+        if model.is_empty() {
+            if let Ok(p) = fs::read_to_string(usb_dir.join("product")) {
+                let trimmed = p.trim().to_string();
+                if !trimmed.is_empty() {
+                    model = trimmed;
+                }
+            }
+        }
+        if serial.is_empty() {
+            if let Ok(s) = fs::read_to_string(usb_dir.join("serial")) {
+                let trimmed = s.trim().to_string();
+                if !trimmed.is_empty() {
+                    serial = trimmed;
+                }
+            }
+        }
+    }
+
+    (vendor, model, serial)
 }

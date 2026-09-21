@@ -108,6 +108,8 @@ fn test_executable_disguised_as_jpg_quarantines() {
     let mut pe_data = vec![0u8; 1024];
     pe_data[0] = 0x4D;
     pe_data[1] = 0x5A;
+    pe_data[0x3c] = 0x80;
+    pe_data[0x80..0x84].copy_from_slice(b"PE\0\0");
 
     let img = make_fat32_disk_with_file("PHOTO", "JPG", &pe_data, false);
     let path = write_temp_image("ferrix_test_fake_jpg.img", &img);
@@ -268,6 +270,8 @@ fn test_hidden_executable_quarantines() {
     let mut pe_data = vec![0u8; 1024];
     pe_data[0] = 0x4D;
     pe_data[1] = 0x5A;
+    pe_data[0x3c] = 0x80;
+    pe_data[0x80..0x84].copy_from_slice(b"PE\0\0");
 
     let img = make_fat32_disk_with_file("PAYLOAD", "EXE", &pe_data, true);
     let path = write_temp_image("ferrix_test_hidden_exe.img", &img);
@@ -424,6 +428,8 @@ fn test_executable_disguised_as_mp3_quarantines() {
     let mut pe_data = vec![0u8; 1024];
     pe_data[0] = 0x4D;
     pe_data[1] = 0x5A;
+    pe_data[0x3c] = 0x80;
+    pe_data[0x80..0x84].copy_from_slice(b"PE\0\0");
 
     let img = make_fat32_disk_with_file("SONG", "MP3", &pe_data, false);
     let path = write_temp_image("ferrix_test_fake_mp3.img", &img);
@@ -443,4 +449,229 @@ fn test_executable_disguised_as_mp3_quarantines() {
 
     let verdict = resolve_verdict(&[stage.id()], &[stage_result], &findings);
     assert_eq!(verdict, Verdict::Quarantine);
+}
+
+#[test]
+fn test_text_file_starting_with_mz_is_not_flagged_as_pe() {
+    let data = b"MZ is not always a PE executable header in plain text files.";
+    assert_eq!(
+        ferrix_usb::scan::magic::detect_content_type(data),
+        ferrix_usb::scan::magic::DetectedType::PlainText
+    );
+    let mut findings = Vec::new();
+    ferrix_usb::scan::magic::check_extension_content_mismatch(
+        "notes.txt",
+        data,
+        &ferrix_usb::core::MediaPath::from("notes.txt"),
+        &mut findings,
+    );
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn test_markdown_file_starting_with_hashbang_is_not_flagged_as_script() {
+    let data = b"#! Important Heading\nThis is notes, not a script.";
+    assert_eq!(
+        ferrix_usb::scan::magic::detect_content_type(data),
+        ferrix_usb::scan::magic::DetectedType::PlainText
+    );
+    let mut findings = Vec::new();
+    ferrix_usb::scan::magic::check_extension_content_mismatch(
+        "heading.txt",
+        data,
+        &ferrix_usb::core::MediaPath::from("heading.txt"),
+        &mut findings,
+    );
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn test_utf8_international_text_detected_as_plaintext() {
+    let data = "Bonjour le monde, café et crème! \u{0928}\u{092e}\u{0938}\u{094d}\u{0924}\u{0947} \u{4e16}\u{754c}".as_bytes();
+    assert_eq!(
+        ferrix_usb::scan::magic::detect_content_type(data),
+        ferrix_usb::scan::magic::DetectedType::PlainText
+    );
+}
+
+#[test]
+fn test_zip_with_code_macro_not_flagged_as_vba() {
+    let mut zip = Vec::new();
+    zip.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
+    zip.extend_from_slice(&[0u8; 14]);
+    zip.extend_from_slice(&0u32.to_le_bytes());
+    zip.extend_from_slice(&0u32.to_le_bytes());
+    let name = b"src/macros.rs";
+    zip.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    zip.extend_from_slice(&0u16.to_le_bytes());
+    zip.extend_from_slice(name);
+
+    let cd_offset = zip.len() as u32;
+    zip.extend_from_slice(&[0x50, 0x4B, 0x02, 0x01]);
+    zip.extend_from_slice(&[0u8; 16]);
+    zip.extend_from_slice(&0u32.to_le_bytes());
+    zip.extend_from_slice(&0u32.to_le_bytes());
+    zip.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    zip.extend_from_slice(&0u16.to_le_bytes());
+    zip.extend_from_slice(&0u16.to_le_bytes());
+    zip.extend_from_slice(&0u16.to_le_bytes());
+    zip.extend_from_slice(&0u16.to_le_bytes());
+    zip.extend_from_slice(&0u32.to_le_bytes());
+    zip.extend_from_slice(&0u32.to_le_bytes());
+    zip.extend_from_slice(name);
+    let cd_size = (zip.len() as u32) - cd_offset;
+
+    zip.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+    zip.extend_from_slice(&0u16.to_le_bytes());
+    zip.extend_from_slice(&0u16.to_le_bytes());
+    zip.extend_from_slice(&1u16.to_le_bytes());
+    zip.extend_from_slice(&1u16.to_le_bytes());
+    zip.extend_from_slice(&cd_size.to_le_bytes());
+    zip.extend_from_slice(&cd_offset.to_le_bytes());
+    zip.extend_from_slice(&0u16.to_le_bytes());
+
+    let mut findings = Vec::new();
+    ferrix_usb::scan::archives::inspect_zip_archive(
+        &zip,
+        &ferrix_usb::core::MediaPath::from("code.zip"),
+        &mut findings,
+    );
+    assert!(!findings.iter().any(|f| f.id == "FX-FILE-007"));
+}
+
+#[test]
+fn test_pdf_with_hyperlink_uri_is_info_severity() {
+    let pdf_data = b"%PDF-1.4\n1 0 obj\n<< /URI (https://example.com) >>\nendobj\n";
+    let mut findings = Vec::new();
+    ferrix_usb::scan::pdf::inspect_pdf_content(
+        pdf_data,
+        &ferrix_usb::core::MediaPath::from("doc.pdf"),
+        &mut findings,
+    );
+    let uri_finding = findings.iter().find(|f| f.evidence.contains("/URI"));
+    assert!(uri_finding.is_some());
+    assert_eq!(
+        uri_finding.unwrap().severity,
+        ferrix_usb::core::Severity::Info
+    );
+}
+
+#[test]
+fn test_ooxml_web_hyperlink_is_info_severity() {
+    let xml_data = br#"<Relationship TargetMode="External" Target="https://example.com/page"/>"#;
+    let mut findings = Vec::new();
+    ferrix_usb::scan::documents::inspect_ooxml_relationships(
+        xml_data,
+        &ferrix_usb::core::MediaPath::from("doc.docx"),
+        &mut findings,
+    );
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, ferrix_usb::core::Severity::Info);
+}
+
+#[test]
+fn test_tar_internal_hard_link_not_flagged_as_symlink() {
+    let mut tar = vec![0u8; 1536];
+    let name = b"hardlink_target.txt";
+    tar[0..name.len()].copy_from_slice(name);
+    tar[156] = b'1';
+    let target = b"original.txt";
+    tar[157..157 + target.len()].copy_from_slice(target);
+    tar[257..262].copy_from_slice(b"ustar");
+
+    let mut findings = Vec::new();
+    let ctx = ferrix_usb::core::ScanContext::new(std::path::PathBuf::from("dummy"));
+    let stage = FileScanStage::default();
+    let mut uncompressed = 0u64;
+    ferrix_usb::scan::archives::inspect_archive_recursive(
+        &tar,
+        &ferrix_usb::core::MediaPath::from("archive.tar"),
+        &mut findings,
+        &stage.policy,
+        0,
+        &mut uncompressed,
+    );
+    let _ = ctx;
+    assert!(!findings.iter().any(|f| f.id == "FX-FILE-006"));
+}
+
+#[test]
+fn test_office_docx_not_flagged_as_extension_mismatch() {
+    let zip_header = b"PK\x03\x04\x14\x00\x00\x00\x08\x00";
+    let mut findings = Vec::new();
+    ferrix_usb::scan::magic::check_extension_content_mismatch(
+        "report.docx",
+        zip_header,
+        &ferrix_usb::core::MediaPath::from("report.docx"),
+        &mut findings,
+    );
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn test_svg_xml_text_not_flagged_as_extension_mismatch() {
+    let svg_data = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><circle cx=\"50\" cy=\"50\" r=\"40\"/></svg>";
+    let mut findings = Vec::new();
+    ferrix_usb::scan::magic::check_extension_content_mismatch(
+        "icon.svg",
+        svg_data,
+        &ferrix_usb::core::MediaPath::from("icon.svg"),
+        &mut findings,
+    );
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn test_zip_filename_with_double_dots_not_flagged_as_path_traversal() {
+    assert!(!ferrix_usb::scan::archives::is_path_traversal_entry(
+        "version..1.txt"
+    ));
+    assert!(!ferrix_usb::scan::archives::is_path_traversal_entry(
+        "chapter...txt"
+    ));
+    assert!(!ferrix_usb::scan::archives::is_path_traversal_entry(
+        "docs/notes..draft.md"
+    ));
+    assert!(ferrix_usb::scan::archives::is_path_traversal_entry(
+        "../passwd"
+    ));
+    assert!(ferrix_usb::scan::archives::is_path_traversal_entry(
+        "docs/../../etc/shadow"
+    ));
+}
+
+#[test]
+fn test_pdf_json_token_not_flagged_as_javascript() {
+    let pdf_data = b"%PDF-1.4\n1 0 obj\n<< /JSON (some-font-or-key) >>\nendobj\n";
+    let mut findings = Vec::new();
+    ferrix_usb::scan::pdf::inspect_pdf_content(
+        pdf_data,
+        &ferrix_usb::core::MediaPath::from("doc.pdf"),
+        &mut findings,
+    );
+    assert!(!findings
+        .iter()
+        .any(|f| f.evidence.contains("JSON") || f.reason.contains("JavaScript")));
+}
+
+#[test]
+fn test_elf_invalid_header_not_flagged_as_elf() {
+    let invalid_elf = b"\x7FELF\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    assert_ne!(
+        ferrix_usb::scan::magic::detect_content_type(invalid_elf),
+        ferrix_usb::scan::magic::DetectedType::Elf
+    );
+}
+
+#[test]
+fn test_double_extension_csv_exe_quarantines() {
+    let mut findings = Vec::new();
+    ferrix_usb::scan::filenames::check_filename_anomalies(
+        "payroll.csv.exe",
+        &ferrix_usb::core::MediaPath::from("payroll.csv.exe"),
+        &mut findings,
+    );
+    assert!(findings
+        .iter()
+        .any(|f| f.id == "FX-FILE-004" && f.severity == ferrix_usb::core::Severity::High));
 }

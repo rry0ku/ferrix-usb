@@ -19,7 +19,7 @@ fn find_eocd(data: &[u8]) -> Option<usize> {
 }
 
 pub fn is_path_traversal_entry(name: &str) -> bool {
-    name.contains("..")
+    name.split(['/', '\\']).any(|seg| seg == "..")
         || name.starts_with('/')
         || name.starts_with('\\')
         || name.contains('\0')
@@ -207,7 +207,13 @@ fn inspect_zip_entries(
                 if !policy.office.allow_macros
                     && (lower.contains("vbaproject.bin")
                         || lower.contains("vba/")
-                        || lower.contains("macros"))
+                        || lower.contains("xl/macrosheets")
+                        || lower.contains("word/vba")
+                        || lower.contains("xl/vba")
+                        || lower.contains("ppt/vba")
+                        || lower.ends_with(".vba")
+                        || lower.ends_with(".vbe")
+                        || lower.ends_with("vbadat.bin"))
                 {
                     findings.push(Finding {
                         id: "FX-FILE-007".to_string(),
@@ -273,34 +279,54 @@ fn inspect_zip_entries(
 
                         let payload_start = local_header_offset + 30 + lh_name_len + lh_extra_len;
                         let payload_end = payload_start.saturating_add(comp_size as usize);
-                        if payload_end <= data.len() && is_nested_archive_name(&entry_name) {
-                            let entry_payload = &data[payload_start..payload_end];
-                            let decompressed_opt = if comp_method == 0 {
-                                Some(entry_payload.to_vec())
-                            } else if comp_method == 8 {
-                                miniz_oxide::inflate::decompress_to_vec_with_limit(
-                                    entry_payload,
-                                    16 * 1024 * 1024,
-                                )
-                                .ok()
-                            } else {
-                                None
-                            };
+                        if payload_end <= data.len() {
+                            if is_nested_archive_name(&entry_name) {
+                                let entry_payload = &data[payload_start..payload_end];
+                                let decompressed_opt = if comp_method == 0 {
+                                    Some(entry_payload.to_vec())
+                                } else if comp_method == 8 {
+                                    miniz_oxide::inflate::decompress_to_vec_with_limit(
+                                        entry_payload,
+                                        16 * 1024 * 1024,
+                                    )
+                                    .ok()
+                                } else {
+                                    None
+                                };
 
-                            if let Some(decomp) = decompressed_opt {
-                                let nested_path = MediaPath::from(format!(
-                                    "{}/{}",
-                                    media_path.escaped(),
-                                    entry_name
-                                ));
-                                inspect_archive_recursive(
-                                    &decomp,
-                                    &nested_path,
-                                    findings,
-                                    policy,
-                                    current_depth + 1,
-                                    cumulative_uncompressed,
-                                );
+                                if let Some(decomp) = decompressed_opt {
+                                    let nested_path = MediaPath::from(format!(
+                                        "{}/{}",
+                                        media_path.escaped(),
+                                        entry_name
+                                    ));
+                                    inspect_archive_recursive(
+                                        &decomp,
+                                        &nested_path,
+                                        findings,
+                                        policy,
+                                        current_depth + 1,
+                                        cumulative_uncompressed,
+                                    );
+                                }
+                            } else if entry_name.ends_with(".rels") {
+                                let entry_payload = &data[payload_start..payload_end];
+                                let decompressed_opt = if comp_method == 0 {
+                                    Some(entry_payload.to_vec())
+                                } else if comp_method == 8 {
+                                    miniz_oxide::inflate::decompress_to_vec_with_limit(
+                                        entry_payload,
+                                        1024 * 1024,
+                                    )
+                                    .ok()
+                                } else {
+                                    None
+                                };
+                                if let Some(decomp) = decompressed_opt {
+                                    crate::scan::documents::inspect_ooxml_relationships(
+                                        &decomp, media_path, findings,
+                                    );
+                                }
                             }
                         }
                     }
@@ -423,7 +449,13 @@ fn inspect_zip_local_headers(
             if !policy.office.allow_macros
                 && (lower.contains("vbaproject.bin")
                     || lower.contains("vba/")
-                    || lower.contains("macros"))
+                    || lower.contains("xl/macrosheets")
+                    || lower.contains("word/vba")
+                    || lower.contains("xl/vba")
+                    || lower.contains("ppt/vba")
+                    || lower.ends_with(".vba")
+                    || lower.ends_with(".vbe")
+                    || lower.ends_with("vbadat.bin"))
             {
                 findings.push(Finding {
                     id: "FX-FILE-007".to_string(),
@@ -473,31 +505,51 @@ fn inspect_zip_local_headers(
 
             let payload_start = curr + 30 + name_len + extra_len;
             let payload_end = payload_start.saturating_add(comp_size as usize);
-            if payload_end <= data.len() && is_nested_archive_name(&entry_name) {
-                let entry_payload = &data[payload_start..payload_end];
-                let decompressed_opt = if comp_method == 0 {
-                    Some(entry_payload.to_vec())
-                } else if comp_method == 8 {
-                    miniz_oxide::inflate::decompress_to_vec_with_limit(
-                        entry_payload,
-                        16 * 1024 * 1024,
-                    )
-                    .ok()
-                } else {
-                    None
-                };
+            if payload_end <= data.len() {
+                if is_nested_archive_name(&entry_name) {
+                    let entry_payload = &data[payload_start..payload_end];
+                    let decompressed_opt = if comp_method == 0 {
+                        Some(entry_payload.to_vec())
+                    } else if comp_method == 8 {
+                        miniz_oxide::inflate::decompress_to_vec_with_limit(
+                            entry_payload,
+                            16 * 1024 * 1024,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
 
-                if let Some(decomp) = decompressed_opt {
-                    let nested_path =
-                        MediaPath::from(format!("{}/{}", media_path.escaped(), entry_name));
-                    inspect_archive_recursive(
-                        &decomp,
-                        &nested_path,
-                        findings,
-                        policy,
-                        current_depth + 1,
-                        cumulative_uncompressed,
-                    );
+                    if let Some(decomp) = decompressed_opt {
+                        let nested_path =
+                            MediaPath::from(format!("{}/{}", media_path.escaped(), entry_name));
+                        inspect_archive_recursive(
+                            &decomp,
+                            &nested_path,
+                            findings,
+                            policy,
+                            current_depth + 1,
+                            cumulative_uncompressed,
+                        );
+                    }
+                } else if entry_name.ends_with(".rels") {
+                    let entry_payload = &data[payload_start..payload_end];
+                    let decompressed_opt = if comp_method == 0 {
+                        Some(entry_payload.to_vec())
+                    } else if comp_method == 8 {
+                        miniz_oxide::inflate::decompress_to_vec_with_limit(
+                            entry_payload,
+                            1024 * 1024,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
+                    if let Some(decomp) = decompressed_opt {
+                        crate::scan::documents::inspect_ooxml_relationships(
+                            &decomp, media_path, findings,
+                        );
+                    }
                 }
             }
         }
@@ -560,16 +612,30 @@ fn inspect_tar_entries(
             });
         }
 
+        let linkname_bytes = &block[157..257];
+        let linkname_end = linkname_bytes.iter().position(|&b| b == 0).unwrap_or(100);
+        let linkname = String::from_utf8_lossy(&linkname_bytes[..linkname_end]).to_string();
+
         let typeflag = block[156];
-        if !policy.archives.allow_symlinks && (typeflag == b'2' || typeflag == b'1') {
+        if typeflag == b'2' && !policy.archives.allow_symlinks {
             findings.push(Finding {
                 id: "FX-FILE-006".to_string(),
                 severity: Severity::High,
                 confidence: Confidence::High,
                 stage: "file_scan".to_string(),
                 location: Location::Path(media_path.clone()),
-                reason: "tar archive contains link entry (symlink escape risk)".to_string(),
-                evidence: format!("tar entry '{name}' is link type {typeflag}"),
+                reason: "tar archive contains symlink entry (symlink escape risk)".to_string(),
+                evidence: format!("tar entry '{name}' is a symbolic link to '{linkname}'"),
+            });
+        } else if typeflag == b'1' && is_path_traversal_entry(&linkname) {
+            findings.push(Finding {
+                id: "FX-FILE-006".to_string(),
+                severity: Severity::High,
+                confidence: Confidence::High,
+                stage: "file_scan".to_string(),
+                location: Location::Path(media_path.clone()),
+                reason: "tar archive contains hard link with path traversal target".to_string(),
+                evidence: format!("tar hard link entry '{name}' points to '{linkname}'"),
             });
         }
 

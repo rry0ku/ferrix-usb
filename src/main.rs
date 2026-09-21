@@ -44,9 +44,13 @@ fn main() -> ExitCode {
                 .with_event_sink(ferrix_usb::core::EventSink::new(event_tx));
             let is_json = args.json;
             let progress_handle = std::thread::spawn(move || {
-                let start_time = std::time::Instant::now();
+                let mut stage_start_time = std::time::Instant::now();
+                let mut current_stage = String::new();
                 let mut last_update = std::time::Instant::now();
+                let mut last_render = std::time::Instant::now();
                 let mut last_bytes = 0u64;
+                let mut smoothed_speed = 0.0f64;
+                let mut current_eta_sec: Option<u64> = None;
                 while let Ok(event) = event_rx.recv() {
                     if is_json {
                         continue;
@@ -58,55 +62,121 @@ fn main() -> ExitCode {
                         message,
                     } = event
                     {
+                        if stage_id != current_stage {
+                            current_stage = stage_id.clone();
+                            stage_start_time = std::time::Instant::now();
+                            last_update = std::time::Instant::now();
+                            last_bytes = 0;
+                            if stage_id == "snapshot" {
+                                smoothed_speed = 0.0;
+                                current_eta_sec = None;
+                            } else {
+                                smoothed_speed = 0.0;
+                                current_eta_sec = Some(1);
+                            }
+                        }
+
                         let dt = last_update.elapsed().as_secs_f64();
-                        let mut speed_str = String::new();
-                        let mut eta_str = String::new();
                         if stage_id == "snapshot" {
-                            if dt >= 0.25 {
-                                let speed = (current.saturating_sub(last_bytes) as f64) / dt;
-                                if speed > 1024.0 {
-                                    speed_str = format!(" ({:.1} MB/s)", speed / (1024.0 * 1024.0));
+                            if dt >= 0.5 {
+                                let bytes_delta = current.saturating_sub(last_bytes);
+                                let instant_speed = (bytes_delta as f64) / dt;
+                                let stage_elapsed = stage_start_time.elapsed().as_secs_f64();
+                                let cumulative_speed = if stage_elapsed > 0.5 && current > 0 {
+                                    (current as f64) / stage_elapsed
+                                } else {
+                                    instant_speed
+                                };
+
+                                if smoothed_speed <= 0.0 {
+                                    smoothed_speed = instant_speed;
+                                } else {
+                                    let ema = 0.75 * smoothed_speed + 0.25 * instant_speed;
+                                    smoothed_speed = 0.7 * ema + 0.3 * cumulative_speed;
+                                }
+
+                                if smoothed_speed > 1024.0 {
                                     if let Some(tot) = total {
                                         let remaining = tot.saturating_sub(current) as f64;
-                                        let eta_sec = (remaining / speed) as u64;
-                                        eta_str = format!(
-                                            " [ETA: {:02}:{:02}]",
-                                            eta_sec / 60,
-                                            eta_sec % 60
-                                        );
+                                        let raw_eta = remaining / smoothed_speed;
+                                        let new_eta = raw_eta.round() as u64;
+                                        current_eta_sec = Some(match current_eta_sec {
+                                            Some(prev) if prev > 0 && new_eta > 0 => {
+                                                if new_eta > prev + 5 {
+                                                    prev + 2
+                                                } else if prev > new_eta + 5 {
+                                                    prev - 2
+                                                } else {
+                                                    new_eta
+                                                }
+                                            }
+                                            _ => new_eta,
+                                        });
                                     }
                                 }
                                 last_bytes = current;
                                 last_update = std::time::Instant::now();
                             }
                         } else if let Some(tot) = total {
-                            if tot > 0 && current > 0 {
-                                let elapsed = start_time.elapsed().as_secs_f64();
-                                let frac = (current as f64) / (tot as f64);
-                                let total_est = elapsed / frac;
-                                let eta_sec = (total_est - elapsed) as u64;
-                                eta_str =
-                                    format!(" [ETA: {:02}:{:02}]", eta_sec / 60, eta_sec % 60);
+                            smoothed_speed = 0.0;
+                            let stage_elapsed = stage_start_time.elapsed().as_secs_f64();
+                            if stage_elapsed >= 0.5 && current > 0 {
+                                let rate = (current as f64) / stage_elapsed;
+                                if rate > 0.0 {
+                                    let remaining = tot.saturating_sub(current) as f64;
+                                    current_eta_sec = Some((remaining / rate).round() as u64);
+                                }
+                            } else if current == tot {
+                                current_eta_sec = Some(0);
+                            } else {
+                                current_eta_sec = Some(1);
                             }
                         }
 
-                        let pct_str = if let Some(tot) = total {
-                            if tot > 0 {
-                                format!("{:.1}%", (current as f64 / tot as f64) * 100.0)
+                        let is_final_chunk = total.map(|t| current == t).unwrap_or(false);
+                        let should_render =
+                            last_render.elapsed().as_millis() >= 100 || is_final_chunk;
+                        if should_render {
+                            let speed_str = if stage_id == "snapshot" && smoothed_speed > 1024.0 {
+                                format!(" ({:.1} MB/s)", smoothed_speed / (1024.0 * 1024.0))
                             } else {
                                 String::new()
-                            }
-                        } else {
-                            String::new()
-                        };
+                            };
 
-                        let msg = message.unwrap_or_else(|| stage_id.clone());
-                        use std::io::Write;
-                        let _ = write!(
-                            std::io::stderr(),
-                            "\r\x1b[2K[{pct_str}]{speed_str}{eta_str} {msg}"
-                        );
-                        let _ = std::io::stderr().flush();
+                            let eta_str = if let Some(eta_sec) = current_eta_sec {
+                                if eta_sec >= 3600 {
+                                    format!(
+                                        " [ETA: {:02}:{:02}:{:02}]",
+                                        eta_sec / 3600,
+                                        (eta_sec % 3600) / 60,
+                                        eta_sec % 60
+                                    )
+                                } else {
+                                    format!(" [ETA: {:02}:{:02}]", eta_sec / 60, eta_sec % 60)
+                                }
+                            } else {
+                                String::new()
+                            };
+
+                            let pct_str = if let Some(tot) = total {
+                                if tot > 0 {
+                                    format!("{:.1}%", (current as f64 / tot as f64) * 100.0)
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                String::new()
+                            };
+
+                            let msg = message.unwrap_or_else(|| stage_id.clone());
+                            use std::io::Write;
+                            let _ = write!(
+                                std::io::stderr(),
+                                "\r\x1b[2K[{pct_str}]{speed_str}{eta_str} {msg}"
+                            );
+                            let _ = std::io::stderr().flush();
+                            last_render = std::time::Instant::now();
+                        }
                     }
                 }
                 if !is_json {
@@ -387,13 +457,54 @@ fn main() -> ExitCode {
                     .unwrap_or_default()
                     .as_secs();
 
+                let (dev_vendor, dev_model, dev_serial) =
+                    ferrix_usb::device::read_block_device_identity(&scan_args.device);
+
+                let usb_dev =
+                    ferrix_usb::device::find_usb_device_sysfs_for_block_device(&scan_args.device)
+                        .and_then(|p| ferrix_usb::device::read_usb_device_from_sysfs(&p).ok());
+
+                let device_identity = if !dev_vendor.is_empty()
+                    || !dev_model.is_empty()
+                    || !dev_serial.is_empty()
+                {
+                    Some(ferrix_usb::manifest::DeviceIdentity {
+                        vendor: if dev_vendor.is_empty() {
+                            None
+                        } else {
+                            Some(dev_vendor.clone())
+                        },
+                        product: if dev_model.is_empty() {
+                            None
+                        } else {
+                            Some(dev_model.clone())
+                        },
+                        serial: if dev_serial.is_empty() {
+                            None
+                        } else {
+                            Some(dev_serial.clone())
+                        },
+                    })
+                } else {
+                    usb_dev
+                        .as_ref()
+                        .map(|u| ferrix_usb::manifest::DeviceIdentity {
+                            vendor: u.manufacturer.clone().or_else(|| Some(u.vendor_id.clone())),
+                            product: u
+                                .product_name
+                                .clone()
+                                .or_else(|| Some(u.product_id.clone())),
+                            serial: u.serial.clone(),
+                        })
+                };
+
                 let mut manifest = Manifest {
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     station_id: "station-local".to_string(),
                     nonce: generate_nonce(),
                     issued_at: now_ts,
                     expires_at: now_ts + 86400,
-                    device_identity: None,
+                    device_identity,
                     device_size_bytes,
                     device_hash: device_hash.clone(),
                     partition_layout_hash,
@@ -415,10 +526,6 @@ fn main() -> ExitCode {
                 if let Some(ref sk) = station_key {
                     let _ = manifest.sign(sk);
                 }
-
-                let usb_dev =
-                    ferrix_usb::device::find_usb_device_sysfs_for_block_device(&scan_args.device)
-                        .and_then(|p| ferrix_usb::device::read_usb_device_from_sysfs(&p).ok());
 
                 let eff_sec = if scan_args.sector_size == 0 {
                     512
@@ -457,6 +564,40 @@ fn main() -> ExitCode {
                     verdict,
                     policy.compute_hash(),
                 );
+
+                if let Some(ref mut d) = forensic_report.device {
+                    if d.serial.is_none() && !dev_serial.is_empty() {
+                        d.serial = Some(dev_serial.clone());
+                    }
+                    if d.manufacturer.is_none() && !dev_vendor.is_empty() {
+                        d.manufacturer = Some(dev_vendor.clone());
+                    }
+                    if d.product_name.is_none() && !dev_model.is_empty() {
+                        d.product_name = Some(dev_model.clone());
+                    }
+                } else if !dev_vendor.is_empty() || !dev_model.is_empty() || !dev_serial.is_empty()
+                {
+                    forensic_report.device = Some(ferrix_usb::report::ForensicDeviceReport {
+                        vendor_id: None,
+                        product_id: None,
+                        serial: if dev_serial.is_empty() {
+                            None
+                        } else {
+                            Some(dev_serial.clone())
+                        },
+                        manufacturer: if dev_vendor.is_empty() {
+                            None
+                        } else {
+                            Some(dev_vendor.clone())
+                        },
+                        product_name: if dev_model.is_empty() {
+                            None
+                        } else {
+                            Some(dev_model.clone())
+                        },
+                        interfaces: Vec::new(),
+                    });
+                }
 
                 if let Some(ref sk) = station_key {
                     let _ = forensic_report.sign(sk);
@@ -1244,6 +1385,88 @@ fn main() -> ExitCode {
             }
             ferrix_usb::device::restore_all_system_automount_defaults();
             println!("System USB automount defaults and services successfully restored.");
+            ExitCode::from(EXIT_PASS as u8)
+        }
+        Some(Commands::Clean(clean_args)) => {
+            if !nix::unistd::Uid::effective().is_root() {
+                eprintln!("Note: cleaning system directories and restoring automount requires elevated privileges. If access fails, re-run with 'sudo ferrix clean'.");
+            }
+
+            let mut extra = Vec::new();
+            if let Some(ref d) = clean_args.dir {
+                extra.push(d.clone());
+            }
+
+            let report = ferrix_usb::disk::clean_all_snapshots(&extra);
+            ferrix_usb::device::cleanup_lingering_station_lockdown();
+            ferrix_usb::device::restore_all_system_automount_defaults();
+
+            if args.json {
+                let deleted_json: Vec<serde_json::Value> = report
+                    .deleted_files
+                    .iter()
+                    .map(|(p, s)| {
+                        serde_json::json!({
+                            "path": p.display().to_string(),
+                            "size_bytes": s,
+                        })
+                    })
+                    .collect();
+
+                let errors_json: Vec<serde_json::Value> = report
+                    .errors
+                    .iter()
+                    .map(|(p, e)| {
+                        serde_json::json!({
+                            "path": p.display().to_string(),
+                            "error": e,
+                        })
+                    })
+                    .collect();
+
+                let out = serde_json::json!({
+                    "status": "ok",
+                    "deleted_snapshots": deleted_json,
+                    "total_deleted": report.deleted_files.len(),
+                    "total_bytes_freed": report.total_bytes_freed,
+                    "errors": errors_json,
+                    "station_restored": true,
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            } else {
+                println!("Ferrix Cleanup");
+                println!("==============");
+                if report.deleted_files.is_empty() {
+                    println!("No lingering snapshot files or temporary workspaces found in candidate directories (/var/tmp, /tmp, .).");
+                } else {
+                    println!("Deleted snapshots & temporary workspaces:");
+                    for (path, size) in &report.deleted_files {
+                        let size_gb = (*size as f64) / 1_073_741_824.0;
+                        if size_gb >= 0.01 {
+                            println!("  - {} ({:.2} GB)", path.display(), size_gb);
+                        } else {
+                            let size_mb = (*size as f64) / 1_048_576.0;
+                            println!("  - {} ({:.2} MB)", path.display(), size_mb);
+                        }
+                    }
+                    let total_gb = (report.total_bytes_freed as f64) / 1_073_741_824.0;
+                    println!(
+                        "\nTotal deleted: {} ({:.2} GB freed)",
+                        report.deleted_files.len(),
+                        total_gb
+                    );
+                }
+
+                if !report.errors.is_empty() {
+                    println!("\nErrors encountered:");
+                    for (path, err) in &report.errors {
+                        println!("  - {}: {err}", path.display());
+                    }
+                }
+
+                println!("System USB automount defaults and udev rules restored.");
+            }
+
             ExitCode::from(EXIT_PASS as u8)
         }
     }

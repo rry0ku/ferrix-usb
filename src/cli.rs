@@ -137,6 +137,13 @@ pub enum Commands {
         after_help = "Examples:\n  sudo ferrix restore"
     )]
     Restore,
+
+    #[command(
+        about = "Clean up temporary snapshots, workspace directories, and station lock rules",
+        long_about = "Cleans up all temporary disk snapshots, memory-backed workspace files, and station lockdown rules created during inspection sessions.\n\nScans candidate temporary directories (/var/tmp, /tmp, ., and $FERRIX_TMPDIR), deletes orphaned snapshot images, removes temporary udev rules, and restores system automount defaults.",
+        after_help = "Examples:\n  sudo ferrix clean\n  sudo ferrix clean --json\n  sudo ferrix clean --dir /path/to/custom/snapshots"
+    )]
+    Clean(CleanArgs),
 }
 
 #[derive(Args, Debug)]
@@ -398,4 +405,14 @@ pub struct MountArgs {
         long_help = "Mount the filesystem with read-write permissions ('rw,nodev,nosuid'). By default, ferrix mounts read-only ('ro,nodev,nosuid,noexec') to protect the system."
     )]
     pub rw: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CleanArgs {
+    #[arg(
+        short = 'd',
+        long,
+        help = "Additional directory to clean for ferrix snapshots"
+    )]
+    pub dir: Option<PathBuf>,
 }

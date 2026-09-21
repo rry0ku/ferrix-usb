@@ -160,12 +160,18 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &mut App) {
                 " [Unmounted]".to_string()
             };
 
+            let vendor_model = match (dev.vendor.trim(), dev.model.trim()) {
+                ("", "") => "Removable Storage Device".to_string(),
+                (v, "") => v.to_string(),
+                ("", m) => m.to_string(),
+                (v, m) => format!("{v} {m}"),
+            };
+
             let text = format!(
-                "{marker}{} ({}) - {} {} [serial: {}]{}",
+                "{marker}{} ({}) - {} [serial: {}]{}",
                 dev.name,
                 size_str,
-                dev.vendor,
-                dev.model,
+                vendor_model,
                 if dev.serial.is_empty() {
                     "none"
                 } else {

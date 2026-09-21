@@ -114,28 +114,73 @@ impl DetectedType {
 }
 
 pub fn detect_content_type(data: &[u8]) -> DetectedType {
-    if data.len() >= 2 && data[0] == 0x4D && data[1] == 0x5A {
-        return DetectedType::Pe;
+    if data.len() >= 0x40 && data[0] == 0x4D && data[1] == 0x5A {
+        let pe_offset =
+            u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
+        if (0x40..=0x1000).contains(&pe_offset)
+            && pe_offset + 4 <= data.len()
+            && &data[pe_offset..pe_offset + 4] == b"PE\0\0"
+        {
+            return DetectedType::Pe;
+        }
+        let e_lfarlc = u16::from_le_bytes([data[0x18], data[0x19]]);
+        if (0x1C..=0x40).contains(&e_lfarlc) && pe_offset == 0 {
+            return DetectedType::Pe;
+        }
     }
 
-    if data.len() >= 4 && &data[0..4] == b"\x7FELF" {
-        return DetectedType::Elf;
+    if data.len() >= 16 && &data[0..4] == b"\x7FELF" {
+        let class = data[4];
+        let encoding = data[5];
+        let version = data[6];
+        let osabi = data[7];
+        if (class == 1 || class == 2)
+            && (encoding == 1 || encoding == 2)
+            && version == 1
+            && osabi <= 18
+        {
+            return DetectedType::Elf;
+        }
     }
 
-    if data.len() >= 4 {
+    if data.len() >= 28 {
         let magic = &data[0..4];
         if magic == b"\xFE\xED\xFA\xCE"
             || magic == b"\xFE\xED\xFA\xCF"
             || magic == b"\xCE\xFA\xED\xFE"
             || magic == b"\xCF\xFA\xED\xFE"
-            || magic == b"\xCA\xFE\xBA\xBE"
         {
             return DetectedType::MachO;
         }
+        if magic == b"\xCA\xFE\xBA\xBE" {
+            let nfat_arch = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+            if (1..=64).contains(&nfat_arch) {
+                return DetectedType::MachO;
+            }
+        }
     }
 
-    if data.len() >= 2 && data[0] == b'#' && data[1] == b'!' {
-        return DetectedType::ShellScript;
+    if data.starts_with(b"#!") {
+        let first_line = data
+            .split(|&b| b == b'\n' || b == b'\r')
+            .next()
+            .unwrap_or(b"");
+        let mut rest = &first_line[2..];
+        while !rest.is_empty() && (rest[0] == b' ' || rest[0] == b'\t') {
+            rest = &rest[1..];
+        }
+        if rest.starts_with(b"/")
+            || rest.starts_with(b"\\")
+            || rest.starts_with(b"env ")
+            || rest.starts_with(b"bash")
+            || rest.starts_with(b"sh ")
+            || rest == b"sh"
+            || rest.starts_with(b"python")
+            || rest.starts_with(b"perl")
+            || rest.starts_with(b"ruby")
+        {
+            return DetectedType::ShellScript;
+        }
     }
 
     if data.len() >= 4 && &data[0..4] == b"%PDF" {
@@ -179,8 +224,11 @@ pub fn detect_content_type(data: &[u8]) -> DetectedType {
         return DetectedType::Gif;
     }
 
-    if data.len() >= 2 && &data[0..2] == b"BM" {
-        return DetectedType::Bmp;
+    if data.len() >= 14 && &data[0..2] == b"BM" {
+        let pixel_offset = u32::from_le_bytes([data[10], data[11], data[12], data[13]]) as usize;
+        if (14..=65536).contains(&pixel_offset) {
+            return DetectedType::Bmp;
+        }
     }
 
     if data.len() >= 12 && &data[0..4] == b"RIFF" {
@@ -239,12 +287,26 @@ pub fn detect_content_type(data: &[u8]) -> DetectedType {
         return DetectedType::Svg;
     }
 
-    if !data.is_empty()
-        && data
-            .iter()
-            .all(|&b| b == b'\t' || b == b'\r' || b == b'\n' || (0x20..=0x7E).contains(&b))
-    {
-        return DetectedType::PlainText;
+    if !data.is_empty() {
+        let valid_str = match std::str::from_utf8(data) {
+            Ok(s) => Some(s),
+            Err(e) if e.error_len().is_none() && e.valid_up_to() > 0 => {
+                std::str::from_utf8(&data[..e.valid_up_to()]).ok()
+            }
+            _ => None,
+        };
+        if let Some(s) = valid_str {
+            let is_clean_text = s.chars().all(|c| {
+                c == '\t'
+                    || c == '\r'
+                    || c == '\n'
+                    || (!c.is_control()
+                        && !matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+            });
+            if is_clean_text {
+                return DetectedType::PlainText;
+            }
+        }
     }
 
     DetectedType::Unknown
@@ -298,6 +360,15 @@ pub fn check_extension_content_mismatch(
 
     let is_media_cross = (detected_class == RiskClass::Audio || detected_class == RiskClass::Video)
         && (expected_class == RiskClass::Audio || expected_class == RiskClass::Video);
+
+    let is_office_zip = detected == DetectedType::ZipOrOffice
+        && (expected_class == RiskClass::Document || expected_class == RiskClass::Archive);
+
+    let is_svg_text = detected == DetectedType::PlainText && extension.eq_ignore_ascii_case("svg");
+
+    if is_office_zip || is_svg_text {
+        return;
+    }
 
     if detected_class == RiskClass::Executable
         && expected_class != RiskClass::Executable

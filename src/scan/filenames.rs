@@ -74,7 +74,7 @@ pub fn check_filename_anomalies_with_policy(
             );
             let is_deceptive_ext = matches!(
                 deceptive_ext.as_str(),
-                "pdf" | "doc" | "docx" | "xls" | "xlsx" | "jpg" | "jpeg" | "png" | "txt"
+                "pdf" | "doc" | "docx" | "xls" | "xlsx" | "csv" | "jpg" | "jpeg" | "png" | "txt"
             );
 
             if is_exec_ext && is_deceptive_ext {

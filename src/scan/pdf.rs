@@ -58,9 +58,11 @@ pub fn inspect_pdf_content_with_policy(
     let mut detected_patterns = HashSet::new();
 
     for &(pattern, reason) in &search_patterns {
-        if data.windows(pattern.len()).any(|window| window == pattern) {
+        if matches_pdf_token(data, pattern) {
             detected_patterns.insert(pattern);
-            let sev = if pattern == b"/URI" || pattern == b"/GoToR" || pattern == b"/SubmitForm" {
+            let sev = if pattern == b"/URI" {
+                Severity::Info
+            } else if pattern == b"/GoToR" || pattern == b"/SubmitForm" {
                 Severity::Low
             } else {
                 Severity::High
@@ -129,13 +131,12 @@ pub fn inspect_pdf_content_with_policy(
                     if let Ok(decomp) = decompressed {
                         for &(pattern, reason) in &search_patterns {
                             if !detected_patterns.contains(pattern)
-                                && decomp.windows(pattern.len()).any(|w| w == pattern)
+                                && matches_pdf_token(&decomp, pattern)
                             {
                                 detected_patterns.insert(pattern);
-                                let sev = if pattern == b"/URI"
-                                    || pattern == b"/GoToR"
-                                    || pattern == b"/SubmitForm"
-                                {
+                                let sev = if pattern == b"/URI" {
+                                    Severity::Info
+                                } else if pattern == b"/GoToR" || pattern == b"/SubmitForm" {
                                     Severity::Low
                                 } else {
                                     Severity::High
@@ -179,4 +180,30 @@ pub fn inspect_pdf_content_with_policy(
             break;
         }
     }
+}
+
+fn matches_pdf_token(data: &[u8], pattern: &[u8]) -> bool {
+    let p_len = pattern.len();
+    if p_len > data.len() {
+        return false;
+    }
+    for (i, window) in data.windows(p_len).enumerate() {
+        if window == pattern {
+            let next_idx = i + p_len;
+            let is_token_end = if next_idx < data.len() {
+                let next_b = data[next_idx];
+                next_b.is_ascii_whitespace()
+                    || matches!(
+                        next_b,
+                        b'/' | b'<' | b'>' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | 0
+                    )
+            } else {
+                true
+            };
+            if is_token_end {
+                return true;
+            }
+        }
+    }
+    false
 }

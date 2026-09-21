@@ -33,13 +33,24 @@ pub fn inspect_ooxml_relationships(
                 || lower.ends_with(".exe")
                 || lower.ends_with(".dll")
                 || lower.ends_with(".vbs")
-                || lower.ends_with(".ps1");
+                || lower.ends_with(".ps1")
+                || lower.ends_with(".dotm")
+                || lower.ends_with(".dotx")
+                || lower.ends_with(".hta")
+                || lower.ends_with(".scr");
+
+            let is_standard_web_link = (lower.starts_with("http://")
+                || lower.starts_with("https://")
+                || lower.starts_with("mailto:"))
+                && !is_high_risk;
 
             let (sev, reason) = if is_high_risk {
                 (
                     Severity::High,
                     "high-risk external relationship target detected in document (remote template/payload risk)",
                 )
+            } else if is_standard_web_link {
+                (Severity::Info, "external web hyperlink in document")
             } else {
                 (
                     Severity::Medium,
@@ -111,8 +122,9 @@ pub fn inspect_ole2_compound_file(
 
             if !policy.office.allow_macros
                 && (lower.contains("vba")
-                    || lower.contains("macros")
-                    || lower.contains("_vba_project"))
+                    || lower.contains("_vba_project")
+                    || lower.contains("macrosheets")
+                    || lower == "macros")
             {
                 findings.push(Finding {
                     id: "FX-FILE-007".to_string(),

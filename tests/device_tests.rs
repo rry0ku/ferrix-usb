@@ -364,3 +364,78 @@ fn test_create_snapshot_partial_file_cleanup_on_error() {
     assert!(res.is_err());
     assert!(!dest_file.exists());
 }
+
+#[test]
+fn test_read_block_device_identity_non_existent() {
+    use ferrix_usb::device::{read_block_device_identity, read_block_device_serial};
+    use std::path::Path;
+
+    let res = read_block_device_serial(Path::new("/dev/non_existent_device_xyz"));
+    assert!(res.is_none());
+
+    let (v, m, s) = read_block_device_identity(Path::new("/dev/non_existent_device_xyz"));
+    assert!(v.is_empty());
+    assert!(m.is_empty());
+    assert!(s.is_empty());
+}
+
+#[test]
+fn test_read_block_device_identity_sda_if_present() {
+    use ferrix_usb::device::{read_block_device_identity, read_block_device_serial};
+    use std::path::Path;
+
+    let sda = Path::new("/dev/sda");
+    if Path::new("/sys/block/sda").exists() {
+        let (v, m, s) = read_block_device_identity(sda);
+        assert_eq!(v, "HP");
+        assert_eq!(m, "USB Flash Drive");
+        assert_eq!(s, "0708426326974660");
+        assert_eq!(
+            read_block_device_serial(sda).as_deref(),
+            Some("0708426326974660")
+        );
+    }
+}
+
+#[test]
+fn test_create_snapshot_pipelined_integrity() {
+    use ferrix_usb::core::{EventSink, ScanEvent};
+    use ferrix_usb::disk::snapshot::{create_snapshot, hash_device_or_image};
+    use std::fs;
+    use std::sync::mpsc::channel;
+
+    let temp_dir = std::env::temp_dir().join(format!("test_pipe_snap_{}", std::process::id()));
+    let _ = fs::create_dir_all(&temp_dir);
+
+    let src_path = temp_dir.join("source.raw");
+    let dst_path = temp_dir.join("dest.img");
+
+    let test_data = vec![0xA5u8; 5 * 1024 * 1024 + 12345];
+    fs::write(&src_path, &test_data).unwrap();
+
+    let (tx, _rx) = channel::<ScanEvent>();
+    let sink = EventSink::new(tx);
+
+    let snapshot = create_snapshot(&src_path, &dst_path, &sink).unwrap();
+    assert_eq!(snapshot.size_bytes, test_data.len() as u64);
+    assert_eq!(snapshot.path, dst_path);
+
+    let (src_hash, src_len) = hash_device_or_image(&src_path).unwrap();
+    let (dst_hash, dst_len) = hash_device_or_image(&dst_path).unwrap();
+
+    assert_eq!(src_len, test_data.len() as u64);
+    assert_eq!(dst_len, test_data.len() as u64);
+    assert_eq!(src_hash, dst_hash);
+    assert_eq!(snapshot.device_hash, src_hash);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::metadata(&dst_path).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o400);
+    }
+
+    let _ = fs::remove_file(&src_path);
+    let _ = fs::remove_file(&dst_path);
+    let _ = fs::remove_dir_all(&temp_dir);
+}
