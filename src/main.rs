@@ -367,11 +367,19 @@ fn main() -> ExitCode {
                 }
             }
 
+            let effective_sector_size = if scan_args.sector_size == 512 && is_block_device {
+                ferrix_usb::device::read_block_device_sector_size(&scan_args.device).unwrap_or(512)
+            } else {
+                scan_args.sector_size
+            };
+
             let device_stage = ferrix_usb::device::DeviceScanStage::new(policy.clone());
-            let partition_stage = ferrix_usb::disk::PartitionScanStage::new(scan_args.sector_size);
-            let fs_stage = ferrix_usb::fs::FilesystemScanStage::new(scan_args.sector_size);
-            let file_stage = ferrix_usb::scan::FileScanStage::default().with_policy(policy.clone());
-            let policy_stage = ferrix_usb::policy::PolicyScanStage::new(policy.clone());
+            let partition_stage = ferrix_usb::disk::PartitionScanStage::new(effective_sector_size);
+            let fs_stage = ferrix_usb::fs::FilesystemScanStage::new(effective_sector_size);
+            let file_stage = ferrix_usb::scan::FileScanStage::new(effective_sector_size)
+                .with_policy(policy.clone());
+            let policy_stage = ferrix_usb::policy::PolicyScanStage::new(policy.clone())
+                .with_sector_size(effective_sector_size);
 
             let mut completed_stages = Vec::new();
             let mut all_findings = Vec::new();
@@ -441,7 +449,7 @@ fn main() -> ExitCode {
                         let layout = ferrix_usb::disk::partition::parse_disk_layout(
                             &mut f,
                             device_size_bytes,
-                            scan_args.sector_size,
+                            effective_sector_size,
                         )
                         .ok();
                         let layout_hash =
@@ -449,7 +457,7 @@ fn main() -> ExitCode {
                         let discovered = ferrix_usb::fs::extract_filesystem_files(
                             &mut f,
                             device_size_bytes,
-                            scan_args.sector_size,
+                            effective_sector_size,
                         )
                         .unwrap_or_default();
                         let file_entries =
@@ -521,7 +529,7 @@ fn main() -> ExitCode {
                     stages_required: required_stages.iter().map(|s| s.to_string()).collect(),
                     stages_completed: completed_stages.clone(),
                     verdict,
-                    sector_size: scan_args.sector_size,
+                    sector_size: effective_sector_size,
                     signature: None,
                 };
 
@@ -536,10 +544,10 @@ fn main() -> ExitCode {
                     let _ = manifest.sign(sk);
                 }
 
-                let eff_sec = if scan_args.sector_size == 0 {
+                let eff_sec = if effective_sector_size == 0 {
                     512
                 } else {
-                    scan_args.sector_size as u64
+                    effective_sector_size as u64
                 };
                 let acq_report = ferrix_usb::report::ForensicAcquisitionReport {
                     sha256: String::new(),
@@ -547,11 +555,11 @@ fn main() -> ExitCode {
                     timestamp: now_ts,
                     total_sectors: device_size_bytes / eff_sec,
                     total_bytes: device_size_bytes,
-                    sector_size: scan_args.sector_size,
+                    sector_size: effective_sector_size,
                 };
 
                 let dummy_layout = ferrix_usb::disk::partition::DiskLayout {
-                    sector_size: scan_args.sector_size,
+                    sector_size: effective_sector_size,
                     total_sectors: acq_report.total_sectors,
                     table_type: ferrix_usb::disk::partition::PartitionTableType::None,
                     partitions: Vec::new(),
@@ -684,7 +692,7 @@ fn main() -> ExitCode {
                     match ferrix_usb::release::release_snapshot_files(
                         snap_to_release,
                         &dest_dir,
-                        scan_args.sector_size,
+                        effective_sector_size,
                     ) {
                         Ok(rel_report) => {
                             if !args.json {
@@ -758,9 +766,17 @@ fn main() -> ExitCode {
                 eprintln!("Note: inspecting physical block devices typically requires elevated privileges. If access fails, re-run with 'sudo ferrix egress ...'.");
             }
 
+            let detected_sector_size = if is_block_device {
+                ferrix_usb::device::read_block_device_sector_size(&egress_args.device)
+                    .unwrap_or(512)
+            } else {
+                512
+            };
+
             let ctx = ferrix_usb::core::ScanContext::new(egress_args.device.clone());
             let egress_stage = ferrix_usb::egress::EgressScanStage::new()
-                .with_verify_wipe(egress_args.verify_wipe);
+                .with_verify_wipe(egress_args.verify_wipe)
+                .with_sector_size(detected_sector_size);
 
             let findings = match egress_stage.run(&ctx) {
                 Ok(f) => f,

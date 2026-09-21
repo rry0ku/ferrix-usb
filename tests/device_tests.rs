@@ -380,18 +380,27 @@ fn test_read_block_device_identity_non_existent() {
 }
 
 #[test]
-fn test_read_block_device_identity_sda_if_present() {
-    use ferrix_usb::device::{read_block_device_identity, read_block_device_serial};
+fn test_read_block_device_identity_if_present() {
+    use ferrix_usb::device::{
+        read_block_device_identity, read_block_device_sector_size, read_block_device_serial,
+    };
     use std::path::Path;
 
-    let sda = Path::new("/dev/sda");
-    if Path::new("/sys/block/sda").exists() {
-        let (v, m, s) = read_block_device_identity(sda);
-        assert!(!v.contains('\n'));
-        assert!(!m.contains('\n'));
-        assert!(!s.contains('\n'));
-        if let Some(ser) = read_block_device_serial(sda) {
-            assert_eq!(ser, s);
+    if let Ok(entries) = std::fs::read_dir("/sys/block") {
+        for entry in entries.flatten() {
+            let dev_name = entry.file_name();
+            let dev_path = Path::new("/dev").join(&dev_name);
+            let (v, m, s) = read_block_device_identity(&dev_path);
+            assert!(!v.contains('\n'));
+            assert!(!m.contains('\n'));
+            assert!(!s.contains('\n'));
+            if let Some(ser) = read_block_device_serial(&dev_path) {
+                assert_eq!(ser, s);
+            }
+            if let Some(sz) = read_block_device_sector_size(&dev_path) {
+                assert!(sz >= 512);
+            }
+            break;
         }
     }
 }

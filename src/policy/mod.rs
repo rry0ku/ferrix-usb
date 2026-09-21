@@ -451,7 +451,12 @@ impl Stage for PolicyScanStage {
                 continue;
             }
 
-            let mut sector0 = vec![0u8; 512];
+            let sec = if self.sector_size == 0 {
+                512
+            } else {
+                self.sector_size as usize
+            };
+            let mut sector0 = vec![0u8; sec];
             if file.read_exact(&mut sector0).is_err() {
                 continue;
             }

@@ -17,10 +17,18 @@ impl DisposableEnvironment {
             .as_nanos();
         let pid = std::process::id();
 
-        let base = if Path::new("/dev/shm").is_dir() {
-            Path::new("/dev/shm")
+        let base = if let Ok(env_dir) = std::env::var("FERRIX_TMPDIR") {
+            if !env_dir.is_empty() && Path::new(&env_dir).is_dir() {
+                PathBuf::from(env_dir)
+            } else if Path::new("/dev/shm").is_dir() {
+                PathBuf::from("/dev/shm")
+            } else {
+                std::env::temp_dir()
+            }
+        } else if Path::new("/dev/shm").is_dir() {
+            PathBuf::from("/dev/shm")
         } else {
-            Path::new("/tmp")
+            std::env::temp_dir()
         };
 
         let workspace_dir = base.join(format!("ferrix-{prefix}-{pid}-{now:x}"));

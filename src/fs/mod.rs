@@ -96,7 +96,12 @@ impl Stage for FilesystemScanStage {
                 continue;
             }
 
-            let mut sector0 = vec![0u8; 512];
+            let sec = if self.sector_size == 0 {
+                512
+            } else {
+                self.sector_size as usize
+            };
+            let mut sector0 = vec![0u8; sec];
             if file.read_exact(&mut sector0).is_err() {
                 continue;
             }
@@ -306,7 +311,12 @@ pub fn extract_filesystem_files<R: Read + Seek>(
             continue;
         }
 
-        let mut sector0 = vec![0u8; 512];
+        let sec = if sector_size == 0 {
+            512
+        } else {
+            sector_size as usize
+        };
+        let mut sector0 = vec![0u8; sec];
         if file.read_exact(&mut sector0).is_err() {
             continue;
         }

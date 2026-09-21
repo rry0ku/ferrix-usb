@@ -302,7 +302,7 @@ impl Stage for FileScanStage {
                     ranges
                 }
                 _ => {
-                    let mut sector0 = vec![0u8; 512];
+                    let mut sector0 = vec![0u8; sec as usize];
                     let has_fs = if file.seek(SeekFrom::Start(0)).is_ok()
                         && file.read_exact(&mut sector0).is_ok()
                     {

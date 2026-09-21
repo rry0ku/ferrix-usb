@@ -242,3 +242,39 @@ pub fn read_block_device_identity(block_dev: &Path) -> (String, String, String) 
 
     (vendor, model, serial)
 }
+
+pub fn read_block_device_sector_size(block_dev: &Path) -> Option<u32> {
+    let dev_name = block_dev.file_name().and_then(|s| s.to_str())?;
+    let sys_block = Path::new("/sys/class/block").join(dev_name);
+    let direct_sys = Path::new("/sys/block").join(dev_name);
+
+    let candidates = [
+        sys_block.join("queue/logical_block_size"),
+        direct_sys.join("queue/logical_block_size"),
+        sys_block.join("../queue/logical_block_size"),
+    ];
+
+    for candidate in &candidates {
+        if let Ok(s) = fs::read_to_string(candidate) {
+            if let Ok(sz) = s.trim().parse::<u32>() {
+                if sz > 0 {
+                    return Some(sz);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        if let Ok(f) = fs::File::open(block_dev) {
+            let mut sz: libc::c_int = 0;
+            let res = unsafe { libc::ioctl(f.as_raw_fd(), 0x1268, &mut sz) };
+            if res >= 0 && sz > 0 {
+                return Some(sz as u32);
+            }
+        }
+    }
+
+    None
+}

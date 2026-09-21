@@ -712,8 +712,14 @@ pub fn cleanup_lingering_station_lockdown() {
         .stderr(Stdio::null())
         .status();
 
-    for temp_dir in [Path::new("/tmp"), Path::new("/var/tmp")] {
-        if let Ok(entries) = fs::read_dir(temp_dir) {
+    let mut cleanup_dirs = vec![PathBuf::from("/var/tmp"), std::env::temp_dir()];
+    if let Ok(env_dir) = std::env::var("FERRIX_TMPDIR") {
+        if !env_dir.is_empty() {
+            cleanup_dirs.push(PathBuf::from(env_dir));
+        }
+    }
+    for temp_dir in cleanup_dirs {
+        if let Ok(entries) = fs::read_dir(&temp_dir) {
             for entry_res in entries.flatten() {
                 let name = entry_res.file_name().to_string_lossy().to_string();
                 if name.starts_with("ferrix-") && (name.ends_with(".img") || name.ends_with(".raw"))

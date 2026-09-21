@@ -129,16 +129,18 @@ fn check_slice_for_remnants(
         (b"-----BEGIN ", "Cryptographic Key or Certificate"),
     ];
 
-    for i in (0..slice.len()).step_by(512) {
+    let eff_step = if sector_size == 0 {
+        512
+    } else {
+        sector_size as usize
+    };
+
+    for i in (0..slice.len()).step_by(eff_step) {
         let sub = &slice[i..];
         for &(sig, name) in signatures {
             if sub.starts_with(sig) {
                 let offset = base_offset.saturating_add(i as u64);
-                let eff_sec = if sector_size == 0 {
-                    512
-                } else {
-                    sector_size as u64
-                };
+                let eff_sec = eff_step as u64;
                 let lba = offset / eff_sec;
                 findings.push(Finding {
                     id: "FX-EGR-001".to_string(),

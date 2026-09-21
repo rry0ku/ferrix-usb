@@ -35,6 +35,7 @@ pub struct DeviceEntry {
     pub is_removable: bool,
     pub is_system_drive: bool,
     pub mount_points: Vec<String>,
+    pub sector_size: u32,
 }
 
 pub enum ScanEvent {
@@ -57,6 +58,7 @@ pub enum ScanEvent {
         findings: Vec<Finding>,
         scan_id: String,
         target_path: PathBuf,
+        sector_size: u32,
     },
     ScanFailed(String),
 }
@@ -100,6 +102,7 @@ pub struct App {
     pub report_export_path: Option<String>,
     pub last_device_refresh: std::time::Instant,
     pub should_quit: bool,
+    pub sector_size: u32,
 }
 
 impl Default for App {
@@ -143,6 +146,7 @@ impl Default for App {
             report_export_path: None,
             last_device_refresh: std::time::Instant::now(),
             should_quit: false,
+            sector_size: 512,
         };
         app.refresh_devices();
         app
@@ -201,6 +205,9 @@ impl App {
                     .map(|(_, mp)| mp)
                     .collect();
 
+                let sector_size =
+                    crate::device::read_block_device_sector_size(&dev_path).unwrap_or(512);
+
                 list.push(DeviceEntry {
                     path: dev_path,
                     name,
@@ -211,6 +218,7 @@ impl App {
                     is_removable,
                     is_system_drive,
                     mount_points,
+                    sector_size,
                 });
             }
         }
@@ -240,6 +248,7 @@ impl App {
                             is_removable: true,
                             is_system_drive: false,
                             mount_points: Vec::new(),
+                            sector_size: 512,
                         });
                     }
                 }
@@ -282,6 +291,7 @@ impl App {
                                     is_removable: true,
                                     is_system_drive: false,
                                     mount_points: Vec::new(),
+                                    sector_size: 512,
                                 });
                             }
                         }
@@ -580,14 +590,19 @@ impl App {
             let write_paths: [&std::path::Path; 0] = [];
             let _ = crate::sandbox::enter_sandbox(&read_paths, &write_paths);
 
+            let detected_sector_size =
+                crate::device::read_block_device_sector_size(&ctx.target_path).unwrap_or(512);
+
             match mode {
                 ScanMode::Ingress => {
                     let device_stage = crate::device::DeviceScanStage::new(policy.clone());
-                    let partition_stage = crate::disk::PartitionScanStage::default();
-                    let fs_stage = crate::fs::FilesystemScanStage::default();
-                    let file_stage =
-                        crate::scan::FileScanStage::default().with_policy(policy.clone());
-                    let policy_stage = crate::policy::PolicyScanStage::new(policy.clone());
+                    let partition_stage =
+                        crate::disk::PartitionScanStage::new(detected_sector_size);
+                    let fs_stage = crate::fs::FilesystemScanStage::new(detected_sector_size);
+                    let file_stage = crate::scan::FileScanStage::new(detected_sector_size)
+                        .with_policy(policy.clone());
+                    let policy_stage = crate::policy::PolicyScanStage::new(policy.clone())
+                        .with_sector_size(detected_sector_size);
 
                     let stages: [&dyn Stage; 5] = [
                         &device_stage,
@@ -661,10 +676,13 @@ impl App {
                         findings,
                         scan_id,
                         target_path,
+                        sector_size: detected_sector_size,
                     });
                 }
                 ScanMode::Egress => {
-                    let egress_stage = crate::egress::EgressScanStage::new().with_verify_wipe(true);
+                    let egress_stage = crate::egress::EgressScanStage::new()
+                        .with_verify_wipe(true)
+                        .with_sector_size(detected_sector_size);
                     let stage_offset = if is_block_device { 1 } else { 0 };
                     let _ = tx.send(ScanEvent::StageStarted {
                         name: egress_stage.name().to_string(),
@@ -716,6 +734,7 @@ impl App {
                         findings,
                         scan_id,
                         target_path: ctx.target_path,
+                        sector_size: detected_sector_size,
                     });
                 }
             }
@@ -883,6 +902,7 @@ impl App {
                         findings,
                         scan_id,
                         target_path,
+                        sector_size,
                     } => {
                         self.scan_activity_log
                             .push(format!("Scan completed. Final verdict: {verdict:?}"));
@@ -891,6 +911,7 @@ impl App {
                         self.all_findings = findings;
                         self.scan_id = Some(scan_id);
                         self.snapshot_path = Some(target_path);
+                        self.sector_size = sector_size;
                         self.is_scanning = false;
                         self.scan_progress_pct = 100;
                         self.estimated_eta_seconds = Some(0);
@@ -1017,7 +1038,7 @@ impl App {
                 .collect(),
             stages_completed: self.completed_stages.clone(),
             verdict: self.verdict.unwrap_or(Verdict::Quarantine),
-            sector_size: 512,
+            sector_size: self.sector_size,
             signature: None,
         };
 
@@ -1049,13 +1070,18 @@ impl App {
             },
         };
 
-        let dest_dir = PathBuf::from("released");
-        let report = crate::release::release_snapshot_files(&snap_path, &dest_dir, 512)
-            .map_err(|e| format!("Release error: {e}"))?;
+        let dest_dir = std::env::var("FERRIX_RELEASE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("released"));
+        let report =
+            crate::release::release_snapshot_files(&snap_path, &dest_dir, self.sector_size)
+                .map_err(|e| format!("Release error: {e}"))?;
 
         self.status_message = Some(format!(
-            "Released {} files ({} bytes) to 'released/'",
-            report.files_released, report.bytes_released
+            "Released {} files ({} bytes) to '{}'",
+            report.files_released,
+            report.bytes_released,
+            dest_dir.display()
         ));
 
         Ok(report)
