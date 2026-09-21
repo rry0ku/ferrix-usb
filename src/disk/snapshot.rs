@@ -322,13 +322,35 @@ pub fn create_snapshot(
         .flush()
         .map_err(|e| StageError::Io(format!("flush failed: {e}")))?;
 
-    if let Ok(metadata) = dest_file.metadata() {
-        let mut perms = metadata.permissions();
-        #[cfg(unix)]
-        perms.set_mode(0o400);
-        #[cfg(not(unix))]
-        perms.set_readonly(true);
-        let _ = dest_file.set_permissions(perms);
+    #[cfg(unix)]
+    {
+        if let Ok(metadata) = dest_file.metadata() {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o400);
+            let _ = dest_file.set_permissions(perms);
+        }
+        if nix::unistd::getuid().as_raw() == 0 {
+            let target_uid = std::env::var("SUDO_UID")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .filter(|&id| id != 0)
+                .unwrap_or(65534);
+            let target_gid = std::env::var("SUDO_GID")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .filter(|&id| id != 0)
+                .unwrap_or(65534);
+            use std::os::unix::fs::chown;
+            let _ = chown(destination_path, Some(target_uid), Some(target_gid));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if let Ok(metadata) = dest_file.metadata() {
+            let mut perms = metadata.permissions();
+            perms.set_readonly(true);
+            let _ = dest_file.set_permissions(perms);
+        }
     }
 
     guard.1 = true;

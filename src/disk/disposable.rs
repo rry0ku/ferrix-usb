@@ -43,6 +43,21 @@ impl DisposableEnvironment {
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&workspace_dir, fs::Permissions::from_mode(0o700));
+
+            if nix::unistd::getuid().as_raw() == 0 {
+                let target_uid = std::env::var("SUDO_UID")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .filter(|&id| id != 0)
+                    .unwrap_or(65534);
+                let target_gid = std::env::var("SUDO_GID")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .filter(|&id| id != 0)
+                    .unwrap_or(65534);
+                use std::os::unix::fs::chown;
+                let _ = chown(&workspace_dir, Some(target_uid), Some(target_gid));
+            }
         }
 
         Ok(Self {

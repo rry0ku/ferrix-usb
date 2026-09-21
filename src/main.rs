@@ -346,6 +346,79 @@ fn main() -> ExitCode {
                 }
             }
 
+            let effective_sector_size = if scan_args.sector_size == 512 && is_block_device {
+                ferrix_usb::device::read_block_device_sector_size(&scan_args.device).unwrap_or(512)
+            } else {
+                scan_args.sector_size
+            };
+
+            let (dev_vendor, dev_model, dev_serial) =
+                ferrix_usb::device::read_block_device_identity(&scan_args.device);
+
+            let usb_dev =
+                ferrix_usb::device::find_usb_device_sysfs_for_block_device(&scan_args.device)
+                    .and_then(|p| ferrix_usb::device::read_usb_device_from_sysfs(&p).ok());
+
+            let device_identity =
+                if !dev_vendor.is_empty() || !dev_model.is_empty() || !dev_serial.is_empty() {
+                    Some(ferrix_usb::manifest::DeviceIdentity {
+                        vendor: if dev_vendor.is_empty() {
+                            None
+                        } else {
+                            Some(dev_vendor.clone())
+                        },
+                        product: if dev_model.is_empty() {
+                            None
+                        } else {
+                            Some(dev_model.clone())
+                        },
+                        serial: if dev_serial.is_empty() {
+                            None
+                        } else {
+                            Some(dev_serial.clone())
+                        },
+                    })
+                } else {
+                    usb_dev
+                        .as_ref()
+                        .map(|u| ferrix_usb::manifest::DeviceIdentity {
+                            vendor: u.manufacturer.clone().or_else(|| Some(u.vendor_id.clone())),
+                            product: u
+                                .product_name
+                                .clone()
+                                .or_else(|| Some(u.product_id.clone())),
+                            serial: u.serial.clone(),
+                        })
+                };
+
+            let station_key_path = PathBuf::from("station.key");
+            let station_key = if station_key_path.exists() {
+                load_station_signing_key(&station_key_path).ok()
+            } else {
+                None
+            };
+
+            let device_stage = ferrix_usb::device::DeviceScanStage::new(policy.clone());
+            let mut completed_stages = Vec::new();
+            let mut all_findings = Vec::new();
+
+            let device_result = match device_stage.run(&ctx) {
+                Ok(findings) => {
+                    all_findings.extend(findings.clone());
+                    ferrix_usb::core::StageResult {
+                        stage_id: device_stage.id().to_string(),
+                        status: ferrix_usb::core::StageStatus::Ok,
+                        findings,
+                    }
+                }
+                Err(e) => ferrix_usb::core::StageResult {
+                    stage_id: device_stage.id().to_string(),
+                    status: ferrix_usb::core::StageStatus::Error(e.to_string()),
+                    findings: Vec::new(),
+                },
+            };
+            completed_stages.push(device_result);
+
             let scan_target = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
             let mut read_paths: Vec<&std::path::Path> =
                 vec![scan_target.as_path(), scan_args.device.as_path()];
@@ -357,6 +430,11 @@ fn main() -> ExitCode {
             if let Some(ref o) = args.out {
                 write_paths.push(o.as_path());
             }
+            let released_dir = PathBuf::from("released");
+            if scan_args.release && args.out.is_none() {
+                let _ = std::fs::create_dir_all(&released_dir);
+                write_paths.push(&released_dir);
+            }
 
             if let Err(e) = ferrix_usb::sandbox::enter_sandbox(&read_paths, &write_paths) {
                 if nix::unistd::getuid().as_raw() == 0 {
@@ -367,13 +445,6 @@ fn main() -> ExitCode {
                 }
             }
 
-            let effective_sector_size = if scan_args.sector_size == 512 && is_block_device {
-                ferrix_usb::device::read_block_device_sector_size(&scan_args.device).unwrap_or(512)
-            } else {
-                scan_args.sector_size
-            };
-
-            let device_stage = ferrix_usb::device::DeviceScanStage::new(policy.clone());
             let partition_stage = ferrix_usb::disk::PartitionScanStage::new(effective_sector_size);
             let fs_stage = ferrix_usb::fs::FilesystemScanStage::new(effective_sector_size);
             let file_stage = ferrix_usb::scan::FileScanStage::new(effective_sector_size)
@@ -381,11 +452,7 @@ fn main() -> ExitCode {
             let policy_stage = ferrix_usb::policy::PolicyScanStage::new(policy.clone())
                 .with_sector_size(effective_sector_size);
 
-            let mut completed_stages = Vec::new();
-            let mut all_findings = Vec::new();
-
             for stage in [
-                &device_stage as &dyn Stage,
                 &partition_stage as &dyn Stage,
                 &fs_stage as &dyn Stage,
                 &file_stage as &dyn Stage,
@@ -473,47 +540,6 @@ fn main() -> ExitCode {
                     .unwrap_or_default()
                     .as_secs();
 
-                let (dev_vendor, dev_model, dev_serial) =
-                    ferrix_usb::device::read_block_device_identity(&scan_args.device);
-
-                let usb_dev =
-                    ferrix_usb::device::find_usb_device_sysfs_for_block_device(&scan_args.device)
-                        .and_then(|p| ferrix_usb::device::read_usb_device_from_sysfs(&p).ok());
-
-                let device_identity = if !dev_vendor.is_empty()
-                    || !dev_model.is_empty()
-                    || !dev_serial.is_empty()
-                {
-                    Some(ferrix_usb::manifest::DeviceIdentity {
-                        vendor: if dev_vendor.is_empty() {
-                            None
-                        } else {
-                            Some(dev_vendor.clone())
-                        },
-                        product: if dev_model.is_empty() {
-                            None
-                        } else {
-                            Some(dev_model.clone())
-                        },
-                        serial: if dev_serial.is_empty() {
-                            None
-                        } else {
-                            Some(dev_serial.clone())
-                        },
-                    })
-                } else {
-                    usb_dev
-                        .as_ref()
-                        .map(|u| ferrix_usb::manifest::DeviceIdentity {
-                            vendor: u.manufacturer.clone().or_else(|| Some(u.vendor_id.clone())),
-                            product: u
-                                .product_name
-                                .clone()
-                                .or_else(|| Some(u.product_id.clone())),
-                            serial: u.serial.clone(),
-                        })
-                };
-
                 let mut manifest = Manifest {
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     station_id: "station-local".to_string(),
@@ -531,13 +557,6 @@ fn main() -> ExitCode {
                     verdict,
                     sector_size: effective_sector_size,
                     signature: None,
-                };
-
-                let station_key_path = PathBuf::from("station.key");
-                let station_key = if station_key_path.exists() {
-                    load_station_signing_key(&station_key_path).ok()
-                } else {
-                    None
                 };
 
                 if let Some(ref sk) = station_key {

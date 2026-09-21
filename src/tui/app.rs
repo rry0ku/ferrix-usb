@@ -585,17 +585,62 @@ impl App {
                 }
             }
 
-            let scan_target = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
-            let read_paths = [scan_target.as_path(), ctx.target_path.as_path()];
-            let write_paths: [&std::path::Path; 0] = [];
-            let _ = crate::sandbox::enter_sandbox(&read_paths, &write_paths);
-
             let detected_sector_size =
                 crate::device::read_block_device_sector_size(&ctx.target_path).unwrap_or(512);
 
             match mode {
                 ScanMode::Ingress => {
                     let device_stage = crate::device::DeviceScanStage::new(policy.clone());
+                    let stage_offset = if is_block_device { 1 } else { 0 };
+                    let mut completed = Vec::new();
+                    let mut findings = Vec::new();
+
+                    let _ = tx.send(ScanEvent::StageStarted {
+                        name: device_stage.name().to_string(),
+                        index: 1 + stage_offset,
+                        total: total_pipeline_stages,
+                    });
+
+                    let device_result = match device_stage.run(&ctx) {
+                        Ok(found) => {
+                            for f in &found {
+                                let _ = tx.send(ScanEvent::FindingFound(f.clone()));
+                            }
+                            findings.extend(found.clone());
+                            StageResult {
+                                stage_id: device_stage.id().to_string(),
+                                status: StageStatus::Ok,
+                                findings: found,
+                            }
+                        }
+                        Err(e) => {
+                            let err_finding = Finding {
+                                id: format!("FX-ERR-{}", device_stage.id().to_uppercase()),
+                                severity: Severity::High,
+                                confidence: crate::core::Confidence::High,
+                                stage: device_stage.id().to_string(),
+                                location: crate::core::Location::Device,
+                                reason: format!("Stage '{}' failed execution", device_stage.name()),
+                                evidence: e.to_string(),
+                            };
+                            let _ = tx.send(ScanEvent::FindingFound(err_finding.clone()));
+                            findings.push(err_finding.clone());
+                            StageResult {
+                                stage_id: device_stage.id().to_string(),
+                                status: StageStatus::Error(e.to_string()),
+                                findings: vec![err_finding],
+                            }
+                        }
+                    };
+
+                    let _ = tx.send(ScanEvent::StageFinished(device_result.clone()));
+                    completed.push(device_result);
+
+                    let scan_target = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
+                    let read_paths = [scan_target.as_path(), ctx.target_path.as_path()];
+                    let write_paths: [&std::path::Path; 0] = [];
+                    let _ = crate::sandbox::enter_sandbox(&read_paths, &write_paths);
+
                     let partition_stage =
                         crate::disk::PartitionScanStage::new(detected_sector_size);
                     let fs_stage = crate::fs::FilesystemScanStage::new(detected_sector_size);
@@ -604,21 +649,13 @@ impl App {
                     let policy_stage = crate::policy::PolicyScanStage::new(policy.clone())
                         .with_sector_size(detected_sector_size);
 
-                    let stages: [&dyn Stage; 5] = [
-                        &device_stage,
-                        &partition_stage,
-                        &fs_stage,
-                        &file_stage,
-                        &policy_stage,
-                    ];
-                    let stage_offset = if is_block_device { 1 } else { 0 };
-                    let mut completed = Vec::new();
-                    let mut findings = Vec::new();
+                    let stages: [&dyn Stage; 4] =
+                        [&partition_stage, &fs_stage, &file_stage, &policy_stage];
 
                     for (idx, stage) in stages.iter().enumerate() {
                         let _ = tx.send(ScanEvent::StageStarted {
                             name: stage.name().to_string(),
-                            index: idx + 1 + stage_offset,
+                            index: idx + 2 + stage_offset,
                             total: total_pipeline_stages,
                         });
 
