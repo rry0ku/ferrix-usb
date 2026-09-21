@@ -110,3 +110,21 @@ pub fn check_polyglot_signatures(
         });
     }
 }
+
+pub fn check_unsupported_filesystem(
+    partition_index: u32,
+    fs_name: &str,
+    findings: &mut Vec<Finding>,
+) {
+    findings.push(Finding {
+        id: "FX-FS-005".to_string(),
+        severity: Severity::High,
+        confidence: Confidence::High,
+        stage: "filesystem_scan".to_string(),
+        location: Location::Partition(partition_index),
+        reason: format!("unsupported file layer extraction for {fs_name} filesystem"),
+        evidence: format!(
+            "partition contains {fs_name} filesystem which cannot be safely inspected at file layer without mounting"
+        ),
+    });
+}

@@ -1,9 +1,9 @@
 use crate::core::StageError;
 use crate::fs::extract_filesystem_files;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,7 +239,23 @@ pub fn release_snapshot_files(
             }
         }
 
-        let mut out_file = File::create(&target_path).map_err(|e| {
+        if target_path.exists() {
+            if let Ok(meta) = target_path.symlink_metadata() {
+                if meta.file_type().is_symlink() {
+                    return Err(StageError::Parse(format!(
+                        "refusing to release file over existing symlink '{}'",
+                        target_path.display()
+                    )));
+                }
+            }
+        }
+
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+
+        let mut out_file = options.open(&target_path).map_err(|e| {
             StageError::Io(format!(
                 "failed to create destination file '{}': {e}",
                 target_path.display()

@@ -194,10 +194,28 @@ pub fn create_snapshot(
 
     let mut guard = PartialFileGuard(destination_path, false);
 
+    if destination_path.exists() {
+        let meta = fs::symlink_metadata(destination_path).map_err(|e| {
+            StageError::Io(format!(
+                "failed to inspect existing destination '{}': {e}",
+                destination_path.display()
+            ))
+        })?;
+        if meta.file_type().is_symlink() {
+            return Err(StageError::Io(format!(
+                "refusing to write snapshot to symlink '{}'",
+                destination_path.display()
+            )));
+        }
+    }
+
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    {
+        options.mode(0o600);
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
 
     let mut dest_file = options.open(destination_path).map_err(|e| {
         StageError::Io(format!(
@@ -401,8 +419,30 @@ pub fn clean_all_snapshots(extra_dirs: &[PathBuf]) -> CleanReport {
                 || file_name.starts_with("ferrix-workspace-")
                 || file_name.starts_with("ferrix-staging-");
 
-            if is_snapshot_file && path.is_file() {
-                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let sym_meta = match fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let uid = sym_meta.uid();
+                let current_uid = nix::unistd::getuid().as_raw();
+                if current_uid != 0 && uid != current_uid {
+                    continue;
+                }
+            }
+
+            if sym_meta.file_type().is_symlink() {
+                if is_snapshot_file || is_workspace_dir {
+                    let _ = fs::remove_file(&path);
+                }
+                continue;
+            }
+
+            if is_snapshot_file && sym_meta.is_file() {
+                let size = sym_meta.len();
                 match fs::remove_file(&path) {
                     Ok(_) => {
                         total_bytes_freed = total_bytes_freed.saturating_add(size);
@@ -412,7 +452,7 @@ pub fn clean_all_snapshots(extra_dirs: &[PathBuf]) -> CleanReport {
                         errors.push((path, e.to_string()));
                     }
                 }
-            } else if is_workspace_dir && path.is_dir() {
+            } else if is_workspace_dir && sym_meta.is_dir() {
                 let size = dir_size(&path);
                 match fs::remove_dir_all(&path) {
                     Ok(_) => {

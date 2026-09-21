@@ -129,9 +129,11 @@ impl Stage for FilesystemScanStage {
             }
             if ntfs_res.is_ok() {
                 detected_fs.push("NTFS");
+                check_unsupported_filesystem(part_index, "NTFS", &mut findings);
             }
             if ext_res.is_some() {
                 detected_fs.push("ext4");
+                check_unsupported_filesystem(part_index, "ext4", &mut findings);
             }
 
             check_polyglot_signatures(part_index, &detected_fs, &mut findings);
@@ -442,6 +444,37 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                             dir_queue.push((child_path, entry.cluster, depth + 1));
                         }
                     }
+                }
+            }
+        } else if let Ok(exfat) = parse_exfat_boot_sector(&sector0) {
+            let root_cluster = exfat.root_dir_first_cluster;
+            if root_cluster >= 2 {
+                let cluster_size = (exfat.bytes_per_sector as usize)
+                    .saturating_mul(exfat.sectors_per_cluster as usize);
+                let chain =
+                    read_exfat_cluster_chain(file, part_offset, &exfat, root_cluster, 1024)
+                        .unwrap_or_else(|_| vec![root_cluster]);
+                let mut dir_data = Vec::new();
+                for c in chain {
+                    if let Some(c_offset) = exfat_cluster_to_offset(part_offset, &exfat, c) {
+                        if file.seek(SeekFrom::Start(c_offset)).is_ok() {
+                            let mut buf = vec![0u8; cluster_size];
+                            if file.read_exact(&mut buf).is_ok() {
+                                dir_data.extend_from_slice(&buf);
+                            }
+                        }
+                    }
+                }
+                for entry in parse_exfat_directory(&dir_data) {
+                    let data_offset = exfat_cluster_to_offset(part_offset, &exfat, entry.cluster);
+                    discovered.push(DiscoveredFile {
+                        path: MediaPath::from(entry.name.as_bytes()),
+                        size: entry.size,
+                        is_dir: entry.is_dir,
+                        attributes: entry.attributes as u8,
+                        partition_index: part_index,
+                        data_offset,
+                    });
                 }
             }
         }

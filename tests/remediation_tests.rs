@@ -290,6 +290,7 @@ fn test_manifest_nonce_replay_protection() {
         stages_required: vec!["file_scan".to_string()],
         stages_completed: vec![],
         verdict: ferrix_usb::core::Verdict::Pass,
+        sector_size: 512,
         signature: None,
     };
     manifest.sign(&signing_key).unwrap();

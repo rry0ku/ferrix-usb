@@ -554,7 +554,8 @@ impl App {
                         return;
                     }
                 };
-                let snap_path = snap_dir.join(format!("ferrix-tui-snapshot-{now}.img"));
+                let nonce = crate::manifest::generate_nonce();
+                let snap_path = snap_dir.join(format!("ferrix-tui-snapshot-{nonce}.img"));
                 match crate::disk::create_snapshot(&ctx.target_path, &snap_path, &ctx.event_sink) {
                     Ok(s) => {
                         ctx.snapshot_path = Some(s.path);
@@ -573,6 +574,11 @@ impl App {
                     }
                 }
             }
+
+            let scan_target = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
+            let read_paths = [scan_target.as_path(), ctx.target_path.as_path()];
+            let write_paths: [&std::path::Path; 0] = [];
+            let _ = crate::sandbox::enter_sandbox(&read_paths, &write_paths);
 
             match mode {
                 ScanMode::Ingress => {
@@ -1011,6 +1017,7 @@ impl App {
                 .collect(),
             stages_completed: self.completed_stages.clone(),
             verdict: self.verdict.unwrap_or(Verdict::Quarantine),
+            sector_size: 512,
             signature: None,
         };
 

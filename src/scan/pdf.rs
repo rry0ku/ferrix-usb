@@ -182,6 +182,37 @@ pub fn inspect_pdf_content_with_policy(
     }
 }
 
+fn normalize_pdf_name(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'#' && i + 2 < raw.len() {
+            let h1 = raw[i + 1];
+            let h2 = raw[i + 2];
+            let n1 = match h1 {
+                b'0'..=b'9' => Some(h1 - b'0'),
+                b'a'..=b'f' => Some(h1 - b'a' + 10),
+                b'A'..=b'F' => Some(h1 - b'A' + 10),
+                _ => None,
+            };
+            let n2 = match h2 {
+                b'0'..=b'9' => Some(h2 - b'0'),
+                b'a'..=b'f' => Some(h2 - b'a' + 10),
+                b'A'..=b'F' => Some(h2 - b'A' + 10),
+                _ => None,
+            };
+            if let (Some(v1), Some(v2)) = (n1, n2) {
+                out.push((v1 << 4) | v2);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    out
+}
+
 fn matches_pdf_token(data: &[u8], pattern: &[u8]) -> bool {
     let p_len = pattern.len();
     if p_len > data.len() {
@@ -205,5 +236,34 @@ fn matches_pdf_token(data: &[u8], pattern: &[u8]) -> bool {
             }
         }
     }
+
+    let mut idx = 0;
+    while idx < data.len() {
+        if data[idx] == b'/' {
+            let start = idx;
+            let mut end = start + 1;
+            while end < data.len() {
+                let b = data[end];
+                if b.is_ascii_whitespace()
+                    || matches!(
+                        b,
+                        b'/' | b'<' | b'>' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | 0
+                    )
+                {
+                    break;
+                }
+                end += 1;
+            }
+            let raw_token = &data[start..end];
+            let normalized = normalize_pdf_name(raw_token);
+            if normalized == pattern {
+                return true;
+            }
+            idx = end;
+        } else {
+            idx += 1;
+        }
+    }
+
     false
 }

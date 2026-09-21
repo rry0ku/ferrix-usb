@@ -20,19 +20,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-pub fn find_station_pubkey(policy_path: Option<&Path>) -> Option<PathBuf> {
-    if let Some(p) = policy_path {
-        if let Some(parent) = p.parent() {
-            let local_pub = parent.join("station.pub");
-            if local_pub.exists() {
-                return Some(local_pub);
-            }
-        }
-    }
-    let cwd_pub = PathBuf::from("station.pub");
-    if cwd_pub.exists() {
-        return Some(cwd_pub);
-    }
+pub fn find_station_pubkey(_policy_path: Option<&Path>) -> Option<PathBuf> {
     let etc_pub = PathBuf::from("/etc/ferrix/station.pub");
     if etc_pub.exists() {
         return Some(etc_pub);

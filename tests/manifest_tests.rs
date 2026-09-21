@@ -133,6 +133,7 @@ fn test_manifest_signing_and_tamper_detection() {
         stages_required: vec!["partition_scan".to_string()],
         stages_completed: Vec::new(),
         verdict: Verdict::Pass,
+        sector_size: 512,
         signature: None,
     };
 
@@ -183,6 +184,7 @@ fn test_manifest_verify_against_matching_media() {
         stages_required: vec!["partition_scan".to_string(), "filesystem_scan".to_string()],
         stages_completed: Vec::new(),
         verdict: Verdict::Pass,
+        sector_size: 512,
         signature: None,
     };
 
@@ -234,6 +236,7 @@ fn test_manifest_verify_fails_on_tampered_media() {
         stages_required: vec!["partition_scan".to_string()],
         stages_completed: Vec::new(),
         verdict: Verdict::Pass,
+        sector_size: 512,
         signature: None,
     };
 

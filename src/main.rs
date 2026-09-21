@@ -312,7 +312,8 @@ fn main() -> ExitCode {
                                 return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
                             }
                         };
-                        snap_dir.join(format!("ferrix-snapshot-{}.img", std::process::id()))
+                        let nonce = ferrix_usb::manifest::generate_nonce();
+                        snap_dir.join(format!("ferrix-snapshot-{nonce}.img"))
                     }
                 };
                 if !args.json {
@@ -357,7 +358,14 @@ fn main() -> ExitCode {
                 write_paths.push(o.as_path());
             }
 
-            let _ = ferrix_usb::sandbox::enter_sandbox(&read_paths, &write_paths);
+            if let Err(e) = ferrix_usb::sandbox::enter_sandbox(&read_paths, &write_paths) {
+                if nix::unistd::getuid().as_raw() == 0 {
+                    eprintln!("Error: failed to enforce sandbox environment as root: {e}");
+                    return ExitCode::from(EXIT_INTERNAL_ERROR as u8);
+                } else {
+                    eprintln!("Warning: failed to enforce sandbox environment: {e}");
+                }
+            }
 
             let device_stage = ferrix_usb::device::DeviceScanStage::new(policy.clone());
             let partition_stage = ferrix_usb::disk::PartitionScanStage::new(scan_args.sector_size);
@@ -513,6 +521,7 @@ fn main() -> ExitCode {
                     stages_required: required_stages.iter().map(|s| s.to_string()).collect(),
                     stages_completed: completed_stages.clone(),
                     verdict,
+                    sector_size: scan_args.sector_size,
                     signature: None,
                 };
 

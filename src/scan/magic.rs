@@ -370,6 +370,11 @@ pub fn check_extension_content_mismatch(
         return;
     }
 
+    let is_media_expected = matches!(
+        expected_class,
+        RiskClass::Image | RiskClass::Audio | RiskClass::Video
+    );
+
     if detected_class == RiskClass::Executable
         && expected_class != RiskClass::Executable
         && expected_class != RiskClass::Unknown
@@ -384,6 +389,18 @@ pub fn check_extension_content_mismatch(
             evidence: format!(
                 "file extension is '.{extension}' but content is {}",
                 detected.name()
+            ),
+        });
+    } else if is_media_expected && detected_class == RiskClass::Text {
+        findings.push(Finding {
+            id: "FX-FILE-001".to_string(),
+            severity: Severity::High,
+            confidence: Confidence::High,
+            stage: "file_scan".to_string(),
+            location: Location::Path(media_path.clone()),
+            reason: "script or text payload disguised as media file".to_string(),
+            evidence: format!(
+                "file extension is '.{extension}' (media) but content is plain text or script"
             ),
         });
     } else if detected_class != expected_class

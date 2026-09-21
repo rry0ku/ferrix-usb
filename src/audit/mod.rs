@@ -49,41 +49,53 @@ pub fn append_audit_entry(
         }
     }
 
-    let (next_index, prev_hash) = if log_path.exists() {
-        let file = File::open(log_path).map_err(|e| {
-            StageError::Io(format!(
-                "failed to open audit log {}: {e}",
-                log_path.display()
-            ))
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(log_path).map_err(|e| {
+        StageError::Io(format!(
+            "failed to open audit log {}: {e}",
+            log_path.display()
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            libc::flock(file.as_raw_fd(), libc::LOCK_EX);
+        }
+    }
+
+    let reader = BufReader::new(&file);
+    let mut last_entry: Option<AuditEntry> = None;
+
+    for line_res in reader.lines() {
+        let line = line_res.map_err(|e| StageError::Io(format!("audit log read error: {e}")))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let entry: AuditEntry = serde_json::from_str(trimmed).map_err(|e| {
+            StageError::Parse(format!("corrupted audit log line '{trimmed}': {e}"))
         })?;
-        let reader = BufReader::new(file);
-        let mut last_entry: Option<AuditEntry> = None;
-
-        for line_res in reader.lines() {
-            let line =
-                line_res.map_err(|e| StageError::Io(format!("audit log read error: {e}")))?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let entry: AuditEntry = serde_json::from_str(trimmed).map_err(|e| {
-                StageError::Parse(format!("corrupted audit log line '{trimmed}': {e}"))
-            })?;
-            let computed = entry.compute_entry_hash()?;
-            if computed != entry.entry_hash {
-                return Err(StageError::Parse(format!(
-                    "tampered audit log entry at index {}",
-                    entry.index
-                )));
-            }
-            last_entry = Some(entry);
+        let computed = entry.compute_entry_hash()?;
+        if computed != entry.entry_hash {
+            return Err(StageError::Parse(format!(
+                "tampered audit log entry at index {}",
+                entry.index
+            )));
         }
+        last_entry = Some(entry);
+    }
 
-        if let Some(last) = last_entry {
-            (last.index + 1, last.entry_hash)
-        } else {
-            (0, GENESIS_HASH.to_string())
-        }
+    let (next_index, prev_hash) = if let Some(last) = last_entry {
+        (last.index + 1, last.entry_hash)
     } else {
         (0, GENESIS_HASH.to_string())
     };
@@ -111,16 +123,10 @@ pub fn append_audit_entry(
     let serialized = serde_json::to_string(&entry)
         .map_err(|e| StageError::Internal(format!("failed to serialize new audit entry: {e}")))?;
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .map_err(|e| {
-            StageError::Io(format!(
-                "failed to open audit log for append {}: {e}",
-                log_path.display()
-            ))
-        })?;
+    use std::io::Seek;
+    file.seek(std::io::SeekFrom::End(0)).map_err(|e| {
+        StageError::Io(format!("failed to seek to end of audit log: {e}"))
+    })?;
 
     writeln!(file, "{serialized}").map_err(|e| {
         StageError::Io(format!(
@@ -131,6 +137,14 @@ pub fn append_audit_entry(
 
     file.flush()
         .map_err(|e| StageError::Io(format!("failed to flush audit log: {e}")))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
 
     Ok(entry)
 }

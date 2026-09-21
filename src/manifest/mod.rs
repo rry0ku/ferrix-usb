@@ -45,6 +45,10 @@ pub struct VerificationReport {
     pub manifest_verdict: Verdict,
 }
 
+fn default_sector_size() -> u32 {
+    512
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: String,
@@ -52,6 +56,8 @@ pub struct Manifest {
     pub nonce: String,
     pub issued_at: u64,
     pub expires_at: u64,
+    #[serde(default = "default_sector_size")]
+    pub sector_size: u32,
     pub device_identity: Option<DeviceIdentity>,
     pub device_size_bytes: u64,
     pub device_hash: String,
@@ -190,7 +196,13 @@ impl Manifest {
             ))
         })?;
 
-        let layout = parse_disk_layout(&mut file, current_size, 512)?;
+        let eff_sector = if self.sector_size == 0 {
+            512
+        } else {
+            self.sector_size
+        };
+
+        let layout = parse_disk_layout(&mut file, current_size, eff_sector)?;
         let current_layout_hash = compute_layout_hash(&layout);
 
         if current_layout_hash != self.partition_layout_hash {
@@ -201,7 +213,7 @@ impl Manifest {
             });
         }
 
-        let discovered = extract_filesystem_files(&mut file, current_size, 512)?;
+        let discovered = extract_filesystem_files(&mut file, current_size, eff_sector)?;
         let current_files = hash_discovered_files(&mut file, &discovered)?;
 
         if current_files.len() != self.files.len() {
@@ -295,30 +307,33 @@ pub fn check_and_record_nonce(nonce: &str, log_path: &Path) -> Result<bool, Stag
 }
 
 pub fn generate_nonce() -> String {
-    let mut f = match File::open("/dev/urandom") {
-        Ok(f) => f,
-        Err(_) => {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let pid = std::process::id();
-            let hash = blake3::hash(format!("{now}:{pid}").as_bytes());
-            return hash.to_hex()[..32].to_string();
-        }
-    };
     let mut bytes = [0u8; 16];
-    if f.read_exact(&mut bytes).is_ok() {
-        hex_encode(&bytes)
-    } else {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let pid = std::process::id();
-        let hash = blake3::hash(format!("{now}:{pid}").as_bytes());
-        hash.to_hex()[..32].to_string()
+    if let Ok(mut f) = File::open("/dev/urandom") {
+        if f.read_exact(&mut bytes).is_ok() {
+            return hex_encode(&bytes);
+        }
     }
+    #[cfg(unix)]
+    {
+        let res = unsafe {
+            libc::getrandom(
+                bytes.as_mut_ptr() as *mut libc::c_void,
+                bytes.len(),
+                0,
+            )
+        };
+        if res == bytes.len() as isize {
+            return hex_encode(&bytes);
+        }
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    let tid = nix::unistd::gettid().as_raw();
+    let hash = blake3::hash(format!("{now}:{pid}:{tid}").as_bytes());
+    hash.to_hex()[..32].to_string()
 }
 
 pub fn compute_layout_hash(layout: &DiskLayout) -> String {

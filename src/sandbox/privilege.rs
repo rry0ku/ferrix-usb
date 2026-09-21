@@ -34,7 +34,7 @@ pub fn drop_privileges() -> Result<(u32, u32, bool), PrivilegeError> {
         .unwrap_or(65534);
 
     let target_gid_obj = Gid::from_raw(target_gid);
-    let _ = setgroups(&[target_gid_obj]);
+    setgroups(&[target_gid_obj]).map_err(PrivilegeError::SetGroups)?;
 
     setgid(target_gid_obj).map_err(|e| PrivilegeError::SetGid(target_gid, e))?;
 

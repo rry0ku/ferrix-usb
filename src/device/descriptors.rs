@@ -31,8 +31,31 @@ pub fn parse_hex_u8(s: &str) -> Option<u8> {
     u8::from_str_radix(trimmed, 16).ok()
 }
 
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{061C}'
+            | '\u{200B}'
+            | '\u{200C}'
+            | '\u{200D}'
+            | '\u{FEFF}'
+    )
+}
+
+pub fn sanitize_descriptor_string(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() && !is_bidi_control(*c) && *c != '\x1b')
+        .collect()
+}
+
 pub fn read_sysfs_string(path: &Path) -> Option<String> {
-    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| sanitize_descriptor_string(s.trim()))
 }
 
 pub fn read_usb_device_from_sysfs(sysfs_path: &Path) -> Result<UsbDevice, StageError> {

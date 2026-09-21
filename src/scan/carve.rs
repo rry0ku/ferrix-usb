@@ -49,6 +49,8 @@ pub fn carve_files_from_reader<R: Read + Seek>(
         let slice = &chunk_buf[..bytes_read];
         let mut i = 0;
 
+        let mut slice_advanced_offset = None;
+
         while i + 16 <= slice.len() && carved.len() < max_carved_files {
             let candidate = &slice[i..];
             let abs_offset = current_offset.saturating_add(i as u64);
@@ -67,7 +69,7 @@ pub fn carve_files_from_reader<R: Read + Seek>(
                     id: "FX-CARVE-001".to_string(),
                     severity: sev,
                     confidence: Confidence::High,
-                    stage: "file_carve".to_string(),
+                    stage: "file_scan".to_string(),
                     location: Location::ByteOffset(abs_offset),
                     reason: format!("carved {ftype} file detected in raw or unallocated space"),
                     evidence: format!(
@@ -83,16 +85,27 @@ pub fn carve_files_from_reader<R: Read + Seek>(
                 });
 
                 let skip_blocks = ((size_clamped.saturating_add(eff_sector - 1)) / eff_sector)
-                    .saturating_mul(eff_sector) as usize;
-                let step = skip_blocks.max(eff_sector as usize);
-                i += step;
-                continue;
+                    .saturating_mul(eff_sector);
+                let step = skip_blocks.max(eff_sector);
+                let next_abs_offset = abs_offset.saturating_add(step);
+
+                if next_abs_offset < current_offset.saturating_add(bytes_read as u64) {
+                    i = (next_abs_offset - current_offset) as usize;
+                    continue;
+                } else {
+                    slice_advanced_offset = Some(next_abs_offset);
+                    break;
+                }
             }
 
             i += eff_sector as usize;
         }
 
-        current_offset = current_offset.saturating_add(bytes_read as u64);
+        if let Some(next_offset) = slice_advanced_offset {
+            current_offset = next_offset;
+        } else {
+            current_offset = current_offset.saturating_add(bytes_read as u64);
+        }
     }
 
     Ok(carved)

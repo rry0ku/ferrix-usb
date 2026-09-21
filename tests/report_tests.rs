@@ -21,6 +21,7 @@ fn make_sample_manifest(station_id: &str, verdict: Verdict) -> Manifest {
         stages_required: vec!["partition_scan".to_string()],
         stages_completed: Vec::new(),
         verdict,
+        sector_size: 512,
         signature: Some("sig1234".to_string()),
     }
 }
