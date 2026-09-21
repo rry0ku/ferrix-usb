@@ -276,7 +276,7 @@ fn test_manifest_nonce_replay_protection() {
         .as_secs();
 
     let mut manifest = Manifest {
-        version: "0.1.0".to_string(),
+        version: "0.1.2".to_string(),
         station_id: "station-test".to_string(),
         nonce: generate_nonce(),
         issued_at: now_ts,

@@ -387,13 +387,12 @@ fn test_read_block_device_identity_sda_if_present() {
     let sda = Path::new("/dev/sda");
     if Path::new("/sys/block/sda").exists() {
         let (v, m, s) = read_block_device_identity(sda);
-        assert_eq!(v, "HP");
-        assert_eq!(m, "USB Flash Drive");
-        assert_eq!(s, "0708426326974660");
-        assert_eq!(
-            read_block_device_serial(sda).as_deref(),
-            Some("0708426326974660")
-        );
+        assert!(!v.contains('\n'));
+        assert!(!m.contains('\n'));
+        assert!(!s.contains('\n'));
+        if let Some(ser) = read_block_device_serial(sda) {
+            assert_eq!(ser, s);
+        }
     }
 }
 

@@ -6,7 +6,7 @@ use std::io::Write;
 
 fn make_sample_manifest(station_id: &str, verdict: Verdict) -> Manifest {
     Manifest {
-        version: "0.1.0".to_string(),
+        version: "0.1.2".to_string(),
         station_id: station_id.to_string(),
         nonce: "1234567890abcdef1234567890abcdef".to_string(),
         issued_at: 1700000000,

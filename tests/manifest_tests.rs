@@ -119,7 +119,7 @@ fn test_manifest_signing_and_tamper_detection() {
     let pk = load_station_verifying_key(&pub_path).unwrap();
 
     let mut manifest = Manifest {
-        version: "0.1.0".to_string(),
+        version: "0.1.2".to_string(),
         station_id: "station-alpha".to_string(),
         nonce: generate_nonce(),
         issued_at: 1000,
@@ -170,7 +170,7 @@ fn test_manifest_verify_against_matching_media() {
         .as_secs();
 
     let mut manifest = Manifest {
-        version: "0.1.0".to_string(),
+        version: "0.1.2".to_string(),
         station_id: "station-test".to_string(),
         nonce: generate_nonce(),
         issued_at: now_ts,
@@ -222,7 +222,7 @@ fn test_manifest_verify_fails_on_tampered_media() {
         .as_secs();
 
     let mut manifest = Manifest {
-        version: "0.1.0".to_string(),
+        version: "0.1.2".to_string(),
         station_id: "station-test".to_string(),
         nonce: generate_nonce(),
         issued_at: now_ts,
