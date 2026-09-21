@@ -132,8 +132,7 @@ pub fn exfat_cluster_to_offset(
     if cluster < 2 {
         return None;
     }
-    let cluster_size =
-        (bpb.bytes_per_sector as u64).saturating_mul(bpb.sectors_per_cluster as u64);
+    let cluster_size = (bpb.bytes_per_sector as u64).saturating_mul(bpb.sectors_per_cluster as u64);
     let heap_offset = partition_offset.saturating_add(
         (bpb.cluster_heap_offset_sectors as u64).saturating_mul(bpb.bytes_per_sector as u64),
     );
@@ -152,8 +151,9 @@ pub fn read_exfat_cluster_chain<R: Read + Seek>(
     }
     let mut chain = Vec::new();
     let mut curr = start_cluster;
-    let fat_offset = partition_offset
-        .saturating_add((bpb.fat_offset_sectors as u64).saturating_mul(bpb.bytes_per_sector as u64));
+    let fat_offset = partition_offset.saturating_add(
+        (bpb.fat_offset_sectors as u64).saturating_mul(bpb.bytes_per_sector as u64),
+    );
     let mut visited = std::collections::HashSet::new();
 
     while curr >= 2 && chain.len() < max_clusters {

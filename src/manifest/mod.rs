@@ -315,13 +315,8 @@ pub fn generate_nonce() -> String {
     }
     #[cfg(unix)]
     {
-        let res = unsafe {
-            libc::getrandom(
-                bytes.as_mut_ptr() as *mut libc::c_void,
-                bytes.len(),
-                0,
-            )
-        };
+        let res =
+            unsafe { libc::getrandom(bytes.as_mut_ptr() as *mut libc::c_void, bytes.len(), 0) };
         if res == bytes.len() as isize {
             return hex_encode(&bytes);
         }

@@ -81,9 +81,8 @@ pub fn append_audit_entry(
         if trimmed.is_empty() {
             continue;
         }
-        let entry: AuditEntry = serde_json::from_str(trimmed).map_err(|e| {
-            StageError::Parse(format!("corrupted audit log line '{trimmed}': {e}"))
-        })?;
+        let entry: AuditEntry = serde_json::from_str(trimmed)
+            .map_err(|e| StageError::Parse(format!("corrupted audit log line '{trimmed}': {e}")))?;
         let computed = entry.compute_entry_hash()?;
         if computed != entry.entry_hash {
             return Err(StageError::Parse(format!(
@@ -124,9 +123,8 @@ pub fn append_audit_entry(
         .map_err(|e| StageError::Internal(format!("failed to serialize new audit entry: {e}")))?;
 
     use std::io::Seek;
-    file.seek(std::io::SeekFrom::End(0)).map_err(|e| {
-        StageError::Io(format!("failed to seek to end of audit log: {e}"))
-    })?;
+    file.seek(std::io::SeekFrom::End(0))
+        .map_err(|e| StageError::Io(format!("failed to seek to end of audit log: {e}")))?;
 
     writeln!(file, "{serialized}").map_err(|e| {
         StageError::Io(format!(

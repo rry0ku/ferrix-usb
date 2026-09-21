@@ -451,9 +451,8 @@ pub fn extract_filesystem_files<R: Read + Seek>(
             if root_cluster >= 2 {
                 let cluster_size = (exfat.bytes_per_sector as usize)
                     .saturating_mul(exfat.sectors_per_cluster as usize);
-                let chain =
-                    read_exfat_cluster_chain(file, part_offset, &exfat, root_cluster, 1024)
-                        .unwrap_or_else(|_| vec![root_cluster]);
+                let chain = read_exfat_cluster_chain(file, part_offset, &exfat, root_cluster, 1024)
+                    .unwrap_or_else(|_| vec![root_cluster]);
                 let mut dir_data = Vec::new();
                 for c in chain {
                     if let Some(c_offset) = exfat_cluster_to_offset(part_offset, &exfat, c) {

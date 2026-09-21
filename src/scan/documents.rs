@@ -25,7 +25,8 @@ pub fn inspect_ooxml_relationships(
             let mut idx = 0;
             while let Some(pos) = tag[idx..].find(key) {
                 let actual_pos = idx + pos;
-                let before_ok = actual_pos == 0 || tag.as_bytes()[actual_pos - 1].is_ascii_whitespace();
+                let before_ok =
+                    actual_pos == 0 || tag.as_bytes()[actual_pos - 1].is_ascii_whitespace();
                 let after = &tag[actual_pos + key.len()..];
                 let trimmed = after.trim_start();
                 if before_ok && trimmed.starts_with('=') {
@@ -46,8 +47,10 @@ pub fn inspect_ooxml_relationships(
 
         let is_external = match find_attr("TargetMode") {
             Some(v) => v.eq_ignore_ascii_case("External"),
-            None => tag.to_lowercase().contains("targetmode")
-                && (tag.contains("External") || tag.contains("external")),
+            None => {
+                tag.to_lowercase().contains("targetmode")
+                    && (tag.contains("External") || tag.contains("external"))
+            }
         };
 
         if is_external {
@@ -172,7 +175,8 @@ pub fn inspect_ole2_compound_file(
                         confidence: Confidence::High,
                         stage: "file_scan".to_string(),
                         location: Location::Path(media_path.clone()),
-                        reason: "embedded native OLE package/payload detected in document".to_string(),
+                        reason: "embedded native OLE package/payload detected in document"
+                            .to_string(),
                         evidence: format!(
                             "OLE2 directory entry '{entry_name}' contains embedded package"
                         ),
