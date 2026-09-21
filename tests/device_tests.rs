@@ -387,7 +387,7 @@ fn test_read_block_device_identity_if_present() {
     use std::path::Path;
 
     if let Ok(entries) = std::fs::read_dir("/sys/block") {
-        for entry in entries.flatten() {
+        if let Some(entry) = entries.flatten().next() {
             let dev_name = entry.file_name();
             let dev_path = Path::new("/dev").join(&dev_name);
             let (v, m, s) = read_block_device_identity(&dev_path);
@@ -400,7 +400,6 @@ fn test_read_block_device_identity_if_present() {
             if let Some(sz) = read_block_device_sector_size(&dev_path) {
                 assert!(sz >= 512);
             }
-            break;
         }
     }
 }
