@@ -192,7 +192,7 @@ impl ForensicReport {
             out.push_str("  (Clean - no findings)\n");
         } else {
             for f in &self.findings {
-                out.push_str(&format!("  ⚠ [{}] {} - {}\n", f.severity, f.id, f.reason));
+                out.push_str(&format!("  - [{}] {} - {}\n", f.severity, f.id, f.reason));
             }
         }
         out.push('\n');

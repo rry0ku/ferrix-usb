@@ -209,6 +209,7 @@ fn test_browse_contents_current_dir_entries_and_sorting() {
                 attributes: 0x20,
                 partition_index: 1,
                 data_offset: Some(512),
+                ..Default::default()
             },
             DiscoveredFile {
                 path: MediaPath::from("photos".as_bytes()),
@@ -217,6 +218,7 @@ fn test_browse_contents_current_dir_entries_and_sorting() {
                 attributes: 0x10,
                 partition_index: 1,
                 data_offset: None,
+                ..Default::default()
             },
             DiscoveredFile {
                 path: MediaPath::from("photos/beach.jpg".as_bytes()),
@@ -225,6 +227,7 @@ fn test_browse_contents_current_dir_entries_and_sorting() {
                 attributes: 0x20,
                 partition_index: 1,
                 data_offset: Some(1024),
+                ..Default::default()
             },
             DiscoveredFile {
                 path: MediaPath::from("photos/trips/japan.png".as_bytes()),
@@ -233,6 +236,7 @@ fn test_browse_contents_current_dir_entries_and_sorting() {
                 attributes: 0x20,
                 partition_index: 1,
                 data_offset: Some(2048),
+                ..Default::default()
             },
             DiscoveredFile {
                 path: MediaPath::from("docs/report.pdf".as_bytes()),
@@ -241,6 +245,7 @@ fn test_browse_contents_current_dir_entries_and_sorting() {
                 attributes: 0x20,
                 partition_index: 1,
                 data_offset: Some(4096),
+                ..Default::default()
             },
         ],
         ..Default::default()
@@ -290,6 +295,7 @@ fn test_browse_contents_key_navigation() {
                 attributes: 0x20,
                 partition_index: 1,
                 data_offset: None,
+                ..Default::default()
             },
             DiscoveredFile {
                 path: MediaPath::from("file_root.txt".as_bytes()),
@@ -298,6 +304,7 @@ fn test_browse_contents_key_navigation() {
                 attributes: 0x20,
                 partition_index: 1,
                 data_offset: None,
+                ..Default::default()
             },
         ],
         ..Default::default()
@@ -332,4 +339,219 @@ fn test_browse_contents_key_navigation() {
     let key_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     handle_key_event(&mut app, key_esc);
     assert_eq!(app.screen, Screen::DeviceSelect);
+}
+
+#[test]
+fn test_status_message_auto_expiration() {
+    let mut app = App::default();
+    assert!(app.status_message.is_none());
+
+    app.set_status("Temporary notification");
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Temporary notification")
+    );
+    assert!(app.status_message_time.is_some());
+
+    app.poll_scan_events();
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Temporary notification")
+    );
+
+    app.status_message_time = Some(std::time::Instant::now() - std::time::Duration::from_secs(6));
+    app.poll_scan_events();
+    assert!(app.status_message.is_none());
+    assert!(app.status_message_time.is_none());
+}
+
+#[test]
+fn test_browse_contents_l_and_right_keys() {
+    use ferrix_usb::core::MediaPath;
+    use ferrix_usb::fs::DiscoveredFile;
+
+    let mut app = App {
+        screen: Screen::BrowseContents,
+        browse_files: vec![DiscoveredFile {
+            path: MediaPath::from("subfolder/doc.txt".as_bytes()),
+            size: 50,
+            is_dir: false,
+            attributes: 0x20,
+            partition_index: 1,
+            data_offset: None,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let key_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE);
+    handle_key_event(&mut app, key_l);
+    assert_eq!(app.browse_current_dir, "subfolder");
+
+    let key_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
+    handle_key_event(&mut app, key_h);
+    assert_eq!(app.browse_current_dir, "");
+
+    let key_right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+    handle_key_event(&mut app, key_right);
+    assert_eq!(app.browse_current_dir, "subfolder");
+
+    let key_left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+    handle_key_event(&mut app, key_left);
+    assert_eq!(app.browse_current_dir, "");
+}
+
+#[test]
+fn test_dos_and_exfat_timestamp_formatting() {
+    use ferrix_usb::fs::exfat::format_exfat_datetime;
+    use ferrix_usb::fs::fat::{format_dos_date, format_dos_datetime};
+
+    let dos_date = (44 << 9) | (5 << 5) | 12;
+    let dos_time = (14 << 11) | (30 << 5) | (20 / 2);
+    let dt = format_dos_datetime(dos_date, dos_time);
+    assert_eq!(dt, Some("2024-05-12 14:30:20".to_string()));
+
+    let d = format_dos_date(dos_date);
+    assert_eq!(d, Some("2024-05-12".to_string()));
+
+    assert_eq!(format_dos_datetime(0, 0), None);
+    assert_eq!(format_dos_date(0), None);
+
+    let exfat_dt_no_tz = format_exfat_datetime(dos_date, dos_time, 0);
+    assert_eq!(exfat_dt_no_tz, Some("2024-05-12 14:30:20".to_string()));
+
+    let exfat_dt_with_tz = format_exfat_datetime(dos_date, dos_time, 0x80 | 22);
+    assert_eq!(
+        exfat_dt_with_tz,
+        Some("2024-05-12 14:30:20 UTC+05:30".to_string())
+    );
+}
+
+#[test]
+fn test_browse_contents_metadata_and_scrolling() {
+    use ferrix_usb::core::MediaPath;
+    use ferrix_usb::fs::DiscoveredFile;
+
+    let mut app = App {
+        screen: Screen::BrowseContents,
+        browse_files: vec![
+            DiscoveredFile {
+                path: MediaPath::from("doc.txt".as_bytes()),
+                size: 94,
+                is_dir: false,
+                attributes: 0x20,
+                partition_index: 1,
+                data_offset: Some(0x2029D0000),
+                created: Some("2024-05-12 14:30:00".to_string()),
+                modified: Some("2024-05-12 15:45:00".to_string()),
+                accessed: Some("2024-05-13".to_string()),
+                starting_cluster: Some(16862),
+                cluster_size: Some(4096),
+                fs_type: Some("FAT32".to_string()),
+                detected_type: Some("Plain Text".to_string()),
+            },
+            DiscoveredFile {
+                path: MediaPath::from("doc2.txt".as_bytes()),
+                size: 128,
+                is_dir: false,
+                attributes: 0x20,
+                partition_index: 1,
+                data_offset: Some(0x2029D1000),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let entries = app.current_dir_entries();
+    assert_eq!(entries.len(), 2);
+    let e = &entries[0];
+    assert_eq!(e.created.as_deref(), Some("2024-05-12 14:30:00"));
+    assert_eq!(e.modified.as_deref(), Some("2024-05-12 15:45:00"));
+    assert_eq!(e.accessed.as_deref(), Some("2024-05-13"));
+    assert_eq!(e.starting_cluster, Some(16862));
+    assert_eq!(e.cluster_size, Some(4096));
+    assert_eq!(e.fs_type.as_deref(), Some("FAT32"));
+    assert_eq!(e.detected_type.as_deref(), Some("Plain Text"));
+
+    assert_eq!(app.browse_detail_scroll, 0);
+    handle_key_event(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE),
+    );
+    assert_eq!(app.browse_detail_scroll, 1);
+    handle_key_event(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE),
+    );
+    assert_eq!(app.browse_detail_scroll, 2);
+    handle_key_event(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE),
+    );
+    assert_eq!(app.browse_detail_scroll, 1);
+    handle_key_event(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.browse_detail_scroll, 0);
+}
+
+#[test]
+fn test_browse_reentry_caching_and_escape_cancellation() {
+    use ferrix_usb::core::MediaPath;
+    use ferrix_usb::fs::DiscoveredFile;
+    use ferrix_usb::tui::DeviceEntry;
+    use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
+
+    let mut app = App {
+        devices: vec![DeviceEntry {
+            path: PathBuf::from("/dev/sdb"),
+            name: "sdb".to_string(),
+            size_bytes: 1024 * 1024,
+            vendor: "Vendor".to_string(),
+            model: "Model".to_string(),
+            serial: "12345".to_string(),
+            is_removable: true,
+            is_system_drive: false,
+            mount_points: Vec::new(),
+            sector_size: 512,
+        }],
+        selected_device_idx: 0,
+        browse_target_path: PathBuf::from("/dev/sdb"),
+        browse_target_name: "sdb".to_string(),
+        browse_files: vec![DiscoveredFile {
+            path: MediaPath::from("existing.txt".as_bytes()),
+            size: 100,
+            is_dir: false,
+            attributes: 0x20,
+            partition_index: 1,
+            data_offset: None,
+            ..Default::default()
+        }],
+        browse_loading: false,
+        screen: Screen::DeviceSelect,
+        ..Default::default()
+    };
+
+    handle_key_event(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+    );
+    assert_eq!(app.screen, Screen::BrowseContents);
+    assert!(!app.browse_loading);
+    assert_eq!(app.browse_files.len(), 1);
+    assert!(app.rx_browse.is_none());
+
+    handle_key_event(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::DeviceSelect);
+    assert!(app.browse_cancel.load(Ordering::SeqCst));
+    assert!(!app.browse_loading);
+    assert!(app.rx_browse.is_none());
+
+    handle_key_event(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+    );
+    assert_eq!(app.screen, Screen::BrowseContents);
+    assert!(!app.browse_loading);
+    assert_eq!(app.browse_files.len(), 1);
 }

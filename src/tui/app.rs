@@ -4,7 +4,9 @@ use crate::triage::{current_timestamp, Suppression, SuppressionScope, Suppressio
 use ratatui::widgets::ListState;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,6 +30,13 @@ pub struct BrowseEntry {
     pub partition_index: u32,
     pub attributes: u8,
     pub data_offset: Option<u64>,
+    pub created: Option<String>,
+    pub modified: Option<String>,
+    pub accessed: Option<String>,
+    pub starting_cluster: Option<u32>,
+    pub cluster_size: Option<u32>,
+    pub fs_type: Option<String>,
+    pub detected_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +116,7 @@ pub struct App {
     pub snapshot_path: Option<PathBuf>,
     pub rx_event: Option<Receiver<ScanEvent>>,
     pub status_message: Option<String>,
+    pub status_message_time: Option<std::time::Instant>,
     pub scan_error: Option<String>,
     pub triage_reason_input: String,
     pub triage_author_input: String,
@@ -124,6 +134,8 @@ pub struct App {
     pub browse_target_name: String,
     pub browse_target_path: PathBuf,
     pub rx_browse: Option<Receiver<Result<Vec<crate::fs::DiscoveredFile>, String>>>,
+    pub browse_detail_scroll: u16,
+    pub browse_cancel: Arc<AtomicBool>,
 }
 
 impl Default for App {
@@ -160,6 +172,7 @@ impl Default for App {
             snapshot_path: None,
             rx_event: None,
             status_message: None,
+            status_message_time: None,
             scan_error: None,
             triage_reason_input: String::new(),
             triage_author_input: "sec-admin".to_string(),
@@ -177,6 +190,8 @@ impl Default for App {
             browse_target_name: String::new(),
             browse_target_path: PathBuf::new(),
             rx_browse: None,
+            browse_detail_scroll: 0,
+            browse_cancel: Arc::new(AtomicBool::new(false)),
         };
         app.refresh_devices();
         app
@@ -331,9 +346,21 @@ impl App {
         }
 
         self.devices = list;
-        if self.selected_device_idx >= self.devices.len() && !self.devices.is_empty() {
+        if self.devices.is_empty() {
+            self.selected_device_idx = 0;
+        } else if self.selected_device_idx >= self.devices.len() {
             self.selected_device_idx = self.devices.len() - 1;
         }
+    }
+
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+        self.status_message_time = Some(std::time::Instant::now());
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
+        self.status_message_time = None;
     }
 
     pub fn selected_device(&self) -> Option<&DeviceEntry> {
@@ -364,7 +391,7 @@ impl App {
         };
 
         if !target_path.exists() {
-            self.status_message = Some(format!("Target does not exist: {}", target_path.display()));
+            self.set_status(format!("Target does not exist: {}", target_path.display()));
             return;
         }
 
@@ -373,9 +400,7 @@ impl App {
             && (crate::device::auth::is_system_device(&target_path)
                 || !crate::device::auth::is_external_device(&target_path))
         {
-            self.status_message = Some(
-                "SECURITY ERROR: Refusing to scan host system or non-external drive.".to_string(),
-            );
+            self.set_status("SECURITY ERROR: Refusing to scan host system or non-external drive.");
             return;
         }
 
@@ -397,7 +422,7 @@ impl App {
         self.completed_stages.clear();
         self.all_findings.clear();
         self.verdict = None;
-        self.status_message = None;
+        self.clear_status();
 
         let (tx, rx): (Sender<ScanEvent>, Receiver<ScanEvent>) = channel();
         self.rx_event = Some(rx);
@@ -811,7 +836,7 @@ impl App {
     pub fn open_drive_browser(&mut self) {
         let selected_dev = if let Some(dev) = self.selected_device() {
             if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/") {
-                self.status_message = Some(format!(
+                self.set_status(format!(
                     "Cannot inspect '{}': No media inserted (0 bytes).",
                     dev.name
                 ));
@@ -847,6 +872,18 @@ impl App {
             selected_dev.sector_size
         };
 
+        if self.browse_target_path == target_path && !self.browse_files.is_empty() {
+            self.browse_target_name = selected_dev.name.clone();
+            self.browse_loading = false;
+            self.browse_error = None;
+            self.screen = Screen::BrowseContents;
+            return;
+        }
+
+        self.browse_cancel.store(true, Ordering::SeqCst);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.browse_cancel = cancel.clone();
+
         self.browse_target_name = selected_dev.name.clone();
         self.browse_target_path = target_path.clone();
         self.browse_files.clear();
@@ -861,6 +898,10 @@ impl App {
 
         thread::spawn(move || {
             let res = (|| -> Result<Vec<crate::fs::DiscoveredFile>, String> {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("Inspection cancelled".to_string());
+                }
+
                 let mut file = crate::disk::snapshot::open_device_or_file_with_retry(
                     &target_path,
                     std::time::Duration::from_secs(3),
@@ -878,6 +919,10 @@ impl App {
                     }
                 })?;
 
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("Inspection cancelled".to_string());
+                }
+
                 let total_bytes =
                     crate::disk::snapshot::get_device_or_file_size(&file, &target_path);
 
@@ -885,9 +930,17 @@ impl App {
                 let write_paths: [&std::path::Path; 0] = [];
                 let _ = crate::sandbox::enter_sandbox_for_thread(&read_paths, &write_paths);
 
-                let files =
-                    crate::fs::extract_filesystem_files(&mut file, total_bytes, sector_size)
-                        .map_err(|e| format!("Filesystem extraction error: {e}"))?;
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("Inspection cancelled".to_string());
+                }
+
+                let files = crate::fs::extract_filesystem_files_with_cancel(
+                    &mut file,
+                    total_bytes,
+                    sector_size,
+                    Some(&cancel),
+                )
+                .map_err(|e| format!("Filesystem extraction error: {e}"))?;
 
                 Ok(files)
             })();
@@ -919,6 +972,13 @@ impl App {
                 partition_index: 0,
                 attributes: 0x10,
                 data_offset: None,
+                created: None,
+                modified: None,
+                accessed: None,
+                starting_cluster: None,
+                cluster_size: None,
+                fs_type: None,
+                detected_type: Some("Directory".to_string()),
             });
         }
 
@@ -939,6 +999,13 @@ impl App {
                             partition_index: file.partition_index,
                             attributes: 0x10,
                             data_offset: None,
+                            created: None,
+                            modified: None,
+                            accessed: None,
+                            starting_cluster: None,
+                            cluster_size: file.cluster_size,
+                            fs_type: file.fs_type.clone(),
+                            detected_type: Some("Directory".to_string()),
                         });
                     }
                 } else if file.is_dir {
@@ -951,6 +1018,13 @@ impl App {
                             partition_index: file.partition_index,
                             attributes: file.attributes,
                             data_offset: file.data_offset,
+                            created: file.created.clone(),
+                            modified: file.modified.clone(),
+                            accessed: file.accessed.clone(),
+                            starting_cluster: file.starting_cluster,
+                            cluster_size: file.cluster_size,
+                            fs_type: file.fs_type.clone(),
+                            detected_type: file.detected_type.clone(),
                         });
                     }
                 } else {
@@ -962,6 +1036,13 @@ impl App {
                         partition_index: file.partition_index,
                         attributes: file.attributes,
                         data_offset: file.data_offset,
+                        created: file.created.clone(),
+                        modified: file.modified.clone(),
+                        accessed: file.accessed.clone(),
+                        starting_cluster: file.starting_cluster,
+                        cluster_size: file.cluster_size,
+                        fs_type: file.fs_type.clone(),
+                        detected_type: file.detected_type.clone(),
                     });
                 }
             } else if trimmed.starts_with(&prefix) {
@@ -981,6 +1062,13 @@ impl App {
                             partition_index: file.partition_index,
                             attributes: 0x10,
                             data_offset: None,
+                            created: None,
+                            modified: None,
+                            accessed: None,
+                            starting_cluster: None,
+                            cluster_size: file.cluster_size,
+                            fs_type: file.fs_type.clone(),
+                            detected_type: Some("Directory".to_string()),
                         });
                     }
                 } else if file.is_dir {
@@ -993,6 +1081,13 @@ impl App {
                             partition_index: file.partition_index,
                             attributes: file.attributes,
                             data_offset: file.data_offset,
+                            created: file.created.clone(),
+                            modified: file.modified.clone(),
+                            accessed: file.accessed.clone(),
+                            starting_cluster: file.starting_cluster,
+                            cluster_size: file.cluster_size,
+                            fs_type: file.fs_type.clone(),
+                            detected_type: file.detected_type.clone(),
                         });
                     }
                 } else {
@@ -1004,6 +1099,13 @@ impl App {
                         partition_index: file.partition_index,
                         attributes: file.attributes,
                         data_offset: file.data_offset,
+                        created: file.created.clone(),
+                        modified: file.modified.clone(),
+                        accessed: file.accessed.clone(),
+                        starting_cluster: file.starting_cluster,
+                        cluster_size: file.cluster_size,
+                        fs_type: file.fs_type.clone(),
+                        detected_type: file.detected_type.clone(),
                     });
                 }
             }
@@ -1027,6 +1129,13 @@ impl App {
     }
 
     pub fn poll_scan_events(&mut self) {
+        if let Some(t) = self.status_message_time {
+            if t.elapsed() >= std::time::Duration::from_secs(5) {
+                self.status_message = None;
+                self.status_message_time = None;
+            }
+        }
+
         if self.screen == Screen::DeviceSelect
             && !self.is_entering_manual_device
             && self.last_device_refresh.elapsed() >= std::time::Duration::from_millis(1000)
@@ -1036,18 +1145,27 @@ impl App {
         }
 
         if let Some(ref rx) = self.rx_browse {
-            if let Ok(res) = rx.try_recv() {
-                self.browse_loading = false;
-                match res {
-                    Ok(files) => {
-                        self.browse_files = files;
-                        self.browse_error = None;
+            match rx.try_recv() {
+                Ok(res) => {
+                    self.browse_loading = false;
+                    match res {
+                        Ok(files) => {
+                            self.browse_files = files;
+                            self.browse_error = None;
+                        }
+                        Err(e) => {
+                            self.browse_error = Some(e);
+                        }
                     }
-                    Err(e) => {
-                        self.browse_error = Some(e);
-                    }
+                    self.rx_browse = None;
                 }
-                self.rx_browse = None;
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.browse_loading = false;
+                    self.browse_error =
+                        Some("Inspection thread disconnected unexpectedly".to_string());
+                    self.rx_browse = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
 
@@ -1224,6 +1342,7 @@ impl App {
                         self.scan_activity_log.push(format!("Scan failed: {err}"));
                         self.is_scanning = false;
                         self.status_message = Some(format!("Scan error: {err}"));
+                        self.status_message_time = Some(std::time::Instant::now());
                         self.scan_error = Some(err);
                         self.screen = Screen::Results;
                     }
@@ -1378,7 +1497,7 @@ impl App {
             crate::release::release_snapshot_files(&snap_path, &dest_dir, self.sector_size)
                 .map_err(|e| format!("Release error: {e}"))?;
 
-        self.status_message = Some(format!(
+        self.set_status(format!(
             "Released {} files ({} bytes) to '{}'",
             report.files_released,
             report.bytes_released,

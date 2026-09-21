@@ -23,6 +23,33 @@ pub struct DiscoveredFile {
     pub attributes: u8,
     pub partition_index: u32,
     pub data_offset: Option<u64>,
+    pub created: Option<String>,
+    pub modified: Option<String>,
+    pub accessed: Option<String>,
+    pub starting_cluster: Option<u32>,
+    pub cluster_size: Option<u32>,
+    pub fs_type: Option<String>,
+    pub detected_type: Option<String>,
+}
+
+impl Default for DiscoveredFile {
+    fn default() -> Self {
+        Self {
+            path: MediaPath::from(""),
+            size: 0,
+            is_dir: false,
+            attributes: 0,
+            partition_index: 0,
+            data_offset: None,
+            created: None,
+            modified: None,
+            accessed: None,
+            starting_cluster: None,
+            cluster_size: None,
+            fs_type: None,
+            detected_type: None,
+        }
+    }
 }
 
 pub struct FilesystemScanStage {
@@ -292,6 +319,15 @@ pub fn extract_filesystem_files<R: Read + Seek>(
     total_bytes: u64,
     sector_size: u32,
 ) -> Result<Vec<DiscoveredFile>, StageError> {
+    extract_filesystem_files_with_cancel(file, total_bytes, sector_size, None)
+}
+
+pub fn extract_filesystem_files_with_cancel<R: Read + Seek>(
+    file: &mut R,
+    total_bytes: u64,
+    sector_size: u32,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Vec<DiscoveredFile>, StageError> {
     let layout = parse_disk_layout(file, total_bytes, sector_size)?;
     let mut discovered = Vec::new();
 
@@ -306,6 +342,9 @@ pub fn extract_filesystem_files<R: Read + Seek>(
     };
 
     for (part_index, start_lba, _total_sectors) in partition_targets {
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+            return Err(StageError::Io("Operation cancelled".to_string()));
+        }
         let part_offset = start_lba.saturating_mul(sector_size as u64);
         if file.seek(SeekFrom::Start(part_offset)).is_err() {
             continue;
@@ -368,11 +407,22 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                 }
             };
 
+            let fs_type_str = match fat.fat_type {
+                FatType::Fat32 => "FAT32",
+                FatType::Fat16 => "FAT16",
+                FatType::Fat12 => "FAT12",
+            };
+            let cluster_size =
+                (fat.bytes_per_sector as u32).saturating_mul(fat.sectors_per_cluster as u32);
+
             let mut dir_queue: Vec<(String, u32, usize)> = Vec::new();
 
             if let Some(data) = root_dir_data {
                 if let Ok((entries, _)) = parse_fat_directory(&data) {
                     for entry in entries {
+                        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+                            return Err(StageError::Io("Operation cancelled".to_string()));
+                        }
                         let data_offset = if entry.cluster >= 2 {
                             Some(cluster_to_byte_offset(
                                 part_offset,
@@ -384,6 +434,32 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                             None
                         };
 
+                        let detected_type = if !entry.is_dir && entry.size > 0 {
+                            if let Some(off) = data_offset {
+                                if file.seek(SeekFrom::Start(off)).is_ok() {
+                                    let mut hdr = vec![0u8; 512.min(entry.size as usize)];
+                                    if file.read_exact(&mut hdr).is_ok() {
+                                        let dt = crate::scan::detect_content_type(&hdr);
+                                        if dt != crate::scan::magic::DetectedType::Unknown {
+                                            Some(dt.name().to_string())
+                                        } else {
+                                            Some("Binary Data / Unknown".to_string())
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else if entry.is_dir {
+                            Some("Directory".to_string())
+                        } else {
+                            Some("Empty File".to_string())
+                        };
+
                         discovered.push(DiscoveredFile {
                             path: MediaPath::from(entry.name.as_bytes()),
                             size: entry.size,
@@ -391,6 +467,17 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                             attributes: entry.attributes,
                             partition_index: part_index,
                             data_offset,
+                            created: entry.created,
+                            modified: entry.modified,
+                            accessed: entry.accessed,
+                            starting_cluster: if entry.cluster >= 2 {
+                                Some(entry.cluster)
+                            } else {
+                                None
+                            },
+                            cluster_size: Some(cluster_size),
+                            fs_type: Some(fs_type_str.to_string()),
+                            detected_type,
                         });
 
                         if entry.is_dir && entry.cluster >= 2 {
@@ -406,6 +493,9 @@ pub fn extract_filesystem_files<R: Read + Seek>(
             }
 
             while let Some((dir_path, dir_cluster, depth)) = dir_queue.pop() {
+                if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+                    return Err(StageError::Io("Operation cancelled".to_string()));
+                }
                 if depth > 16 || !visited_clusters.insert(dir_cluster) {
                     continue;
                 }
@@ -429,6 +519,9 @@ pub fn extract_filesystem_files<R: Read + Seek>(
 
                 if let Ok((entries, _)) = parse_fat_directory(&data) {
                     for entry in entries {
+                        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+                            return Err(StageError::Io("Operation cancelled".to_string()));
+                        }
                         let child_path = format!("{dir_path}/{}", entry.name);
                         let data_offset = if entry.cluster >= 2 {
                             Some(cluster_to_byte_offset(
@@ -441,6 +534,32 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                             None
                         };
 
+                        let detected_type = if !entry.is_dir && entry.size > 0 {
+                            if let Some(off) = data_offset {
+                                if file.seek(SeekFrom::Start(off)).is_ok() {
+                                    let mut hdr = vec![0u8; 512.min(entry.size as usize)];
+                                    if file.read_exact(&mut hdr).is_ok() {
+                                        let dt = crate::scan::detect_content_type(&hdr);
+                                        if dt != crate::scan::magic::DetectedType::Unknown {
+                                            Some(dt.name().to_string())
+                                        } else {
+                                            Some("Binary Data / Unknown".to_string())
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else if entry.is_dir {
+                            Some("Directory".to_string())
+                        } else {
+                            Some("Empty File".to_string())
+                        };
+
                         discovered.push(DiscoveredFile {
                             path: MediaPath::from(child_path.as_bytes()),
                             size: entry.size,
@@ -448,6 +567,17 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                             attributes: entry.attributes,
                             partition_index: part_index,
                             data_offset,
+                            created: entry.created,
+                            modified: entry.modified,
+                            accessed: entry.accessed,
+                            starting_cluster: if entry.cluster >= 2 {
+                                Some(entry.cluster)
+                            } else {
+                                None
+                            },
+                            cluster_size: Some(cluster_size),
+                            fs_type: Some(fs_type_str.to_string()),
+                            detected_type,
                         });
 
                         if entry.is_dir && entry.cluster >= 2 && depth < 16 {
@@ -475,7 +605,36 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                     }
                 }
                 for entry in parse_exfat_directory(&dir_data) {
+                    if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst)) {
+                        return Err(StageError::Io("Operation cancelled".to_string()));
+                    }
                     let data_offset = exfat_cluster_to_offset(part_offset, &exfat, entry.cluster);
+                    let detected_type = if !entry.is_dir && entry.size > 0 {
+                        if let Some(off) = data_offset {
+                            if file.seek(SeekFrom::Start(off)).is_ok() {
+                                let mut hdr = vec![0u8; 512.min(entry.size as usize)];
+                                if file.read_exact(&mut hdr).is_ok() {
+                                    let dt = crate::scan::detect_content_type(&hdr);
+                                    if dt != crate::scan::magic::DetectedType::Unknown {
+                                        Some(dt.name().to_string())
+                                    } else {
+                                        Some("Binary Data / Unknown".to_string())
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else if entry.is_dir {
+                        Some("Directory".to_string())
+                    } else {
+                        Some("Empty File".to_string())
+                    };
+
                     discovered.push(DiscoveredFile {
                         path: MediaPath::from(entry.name.as_bytes()),
                         size: entry.size,
@@ -483,6 +642,17 @@ pub fn extract_filesystem_files<R: Read + Seek>(
                         attributes: entry.attributes as u8,
                         partition_index: part_index,
                         data_offset,
+                        created: entry.created,
+                        modified: entry.modified,
+                        accessed: entry.accessed,
+                        starting_cluster: if entry.cluster >= 2 {
+                            Some(entry.cluster)
+                        } else {
+                            None
+                        },
+                        cluster_size: Some(cluster_size as u32),
+                        fs_type: Some("exFAT".to_string()),
+                        detected_type,
                     });
                 }
             }

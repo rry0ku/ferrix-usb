@@ -68,7 +68,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         }
         Screen::ModeSelect => "[1] Ingress  [2] Egress  [v] Browse Files  [Enter] Start Scan  [Esc] Back  [q] Quit",
         Screen::BrowseContents => {
-            "[↑/↓/j/k] Navigate  [Enter] Open Dir  [Backspace] Up  [s] Start Scan  [Esc] Back  [q] Quit"
+            "[↑/↓/j/k] Navigate  [Enter/l] Open Dir  [Backspace/h] Up  [J/K] Scroll Details  [s] Start Scan  [Esc] Back  [q] Quit"
         }
         Screen::Scanning => "Scanning in progress... Please wait. [q] Cancel",
         Screen::Results => {
@@ -79,17 +79,30 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let footer = if let Some(ref msg) = app.status_message {
+        let msg_lower = msg.to_lowercase();
+        let (prefix, prefix_color) = if msg_lower.contains("error") || msg_lower.contains("failed")
+        {
+            ("Error: ", Color::LightRed)
+        } else if msg_lower.contains("success")
+            || msg_lower.contains("unmounted")
+            || msg_lower.contains("released")
+        {
+            ("Success: ", Color::LightGreen)
+        } else {
+            ("Notice: ", Color::LightYellow)
+        };
+
         Paragraph::new(Line::from(vec![
             Span::styled(
-                "Notice: ",
+                prefix,
                 Style::default()
-                    .fg(Color::LightRed)
+                    .fg(prefix_color)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 msg,
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -132,6 +145,7 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &mut App) {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
+                Span::styled("█", Style::default().fg(Color::Yellow)),
             ]),
         ];
         let p = Paragraph::new(text).block(block);
@@ -139,76 +153,118 @@ fn draw_device_select(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let items: Vec<ListItem> = app
-        .devices
-        .iter()
-        .enumerate()
-        .map(|(idx, dev)| {
-            let is_selected = idx == app.selected_device_idx;
-            let marker = if is_selected { "▶ " } else { "  " };
-
-            let size_mb = dev.size_bytes / (1024 * 1024);
-            let size_str = if size_mb > 1024 {
-                format!("{:.1} GB", size_mb as f64 / 1024.0)
-            } else {
-                format!("{size_mb} MB")
-            };
-
-            let mount_tag = if dev.is_system_drive {
-                " [HOST OS DRIVE - PROTECTED]".to_string()
-            } else if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/") {
-                " [NO MEDIA / EMPTY]".to_string()
-            } else if !dev.mount_points.is_empty() {
-                format!(" [MOUNTED at {} - UNSAFE]", dev.mount_points.join(", "))
-            } else {
-                " [Unmounted]".to_string()
-            };
-
-            let vendor_model = match (dev.vendor.trim(), dev.model.trim()) {
-                ("", "") => "Removable Storage Device".to_string(),
-                (v, "") => v.to_string(),
-                ("", m) => m.to_string(),
-                (v, m) => format!("{v} {m}"),
-            };
-
-            let text = format!(
-                "{marker}{} ({}) - {} [serial: {}]{}",
-                dev.name,
-                size_str,
-                vendor_model,
-                if dev.serial.is_empty() {
-                    "none"
-                } else {
-                    &dev.serial
-                },
-                mount_tag
-            );
-
-            let style = if is_selected {
-                if dev.is_system_drive {
+    let items: Vec<ListItem> = if app.devices.is_empty() {
+        vec![
+            ListItem::new(Line::from("")),
+            ListItem::new(Line::from(vec![Span::styled(
+                "  No removable storage devices detected.",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )])),
+            ListItem::new(Line::from("")),
+            ListItem::new(Line::from(vec![Span::styled(
+                "  • Insert a USB drive or SD card to begin inspection.",
+                Style::default().fg(Color::DarkGray),
+            )])),
+            ListItem::new(Line::from(vec![
+                Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "[m]",
                     Style::default()
                         .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else if !dev.mount_points.is_empty() {
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " to enter a block device or disk image path manually (e.g. /dev/sdb).",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+            ListItem::new(Line::from(vec![
+                Span::styled("  • Press ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "[r]",
                     Style::default()
-                        .fg(Color::LightRed)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                }
-            } else if dev.is_system_drive {
-                Style::default().fg(Color::DarkGray)
-            } else if !dev.mount_points.is_empty() {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::White)
-            };
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " to refresh device detection.",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+        ]
+    } else {
+        app.devices
+            .iter()
+            .enumerate()
+            .map(|(idx, dev)| {
+                let is_selected = idx == app.selected_device_idx;
+                let marker = if is_selected { "▶ " } else { "  " };
 
-            ListItem::new(text).style(style)
-        })
-        .collect();
+                let size_mb = dev.size_bytes / (1024 * 1024);
+                let size_str = if size_mb > 1024 {
+                    format!("{:.1} GB", size_mb as f64 / 1024.0)
+                } else {
+                    format!("{size_mb} MB")
+                };
+
+                let mount_tag = if dev.is_system_drive {
+                    " [HOST OS DRIVE - PROTECTED]".to_string()
+                } else if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/") {
+                    " [NO MEDIA / EMPTY]".to_string()
+                } else if !dev.mount_points.is_empty() {
+                    format!(" [MOUNTED at {} - UNSAFE]", dev.mount_points.join(", "))
+                } else {
+                    " [Unmounted]".to_string()
+                };
+
+                let vendor_model = match (dev.vendor.trim(), dev.model.trim()) {
+                    ("", "") => "Removable Storage Device".to_string(),
+                    (v, "") => v.to_string(),
+                    ("", m) => m.to_string(),
+                    (v, m) => format!("{v} {m}"),
+                };
+
+                let text = format!(
+                    "{marker}{} ({}) - {} [serial: {}]{}",
+                    dev.name,
+                    size_str,
+                    vendor_model,
+                    if dev.serial.is_empty() {
+                        "none"
+                    } else {
+                        &dev.serial
+                    },
+                    mount_tag
+                );
+
+                let style = if is_selected {
+                    if dev.is_system_drive {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else if !dev.mount_points.is_empty() {
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    }
+                } else if dev.is_system_drive {
+                    Style::default().fg(Color::DarkGray)
+                } else if !dev.mount_points.is_empty() {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                ListItem::new(text).style(style)
+            })
+            .collect()
+    };
 
     let title = format!(" Detected Storage Media & Images ({}) ", app.devices.len());
     let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
@@ -652,7 +708,7 @@ fn draw_results(f: &mut Frame, area: Rect, app: &mut App) {
                 Severity::High => ("HIGH", Color::LightRed),
                 Severity::Medium => ("MED ", Color::Yellow),
                 Severity::Low => ("LOW ", Color::Blue),
-                Severity::Info => ("INFO", Color::DarkGray),
+                Severity::Info => ("INFO", Color::Cyan),
             };
 
             let line = format!(
@@ -857,24 +913,40 @@ fn draw_triage_modal(f: &mut Frame, app: &App) {
     .style(Style::default().fg(Color::Yellow));
     f.render_widget(p_info, chunks[0]);
 
+    let author_cursor = if app.triage_focus_field == 0 {
+        "█"
+    } else {
+        ""
+    };
     let author_style = if app.triage_focus_field == 0 {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::White)
     };
-    let p_author = Paragraph::new(format!("Author: {}", app.triage_author_input))
-        .style(author_style)
-        .block(Block::default().borders(Borders::BOTTOM));
+    let p_author = Paragraph::new(format!(
+        "Author: {}{author_cursor}",
+        app.triage_author_input
+    ))
+    .style(author_style)
+    .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(p_author, chunks[1]);
 
+    let reason_cursor = if app.triage_focus_field == 1 {
+        "█"
+    } else {
+        ""
+    };
     let reason_style = if app.triage_focus_field == 1 {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::White)
     };
-    let p_reason = Paragraph::new(format!("Reason: {}", app.triage_reason_input))
-        .style(reason_style)
-        .block(Block::default().borders(Borders::BOTTOM));
+    let p_reason = Paragraph::new(format!(
+        "Reason: {}{reason_cursor}",
+        app.triage_reason_input
+    ))
+    .style(reason_style)
+    .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(p_reason, chunks[2]);
 }
 
@@ -946,15 +1018,12 @@ fn draw_browse_contents(f: &mut Frame, area: Rect, app: &mut App) {
             .borders(Borders::ALL);
         let text = vec![
             Line::from(""),
-            Line::from(vec![
-                Span::styled("⏳ ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "Parsing filesystem structures in sandboxed environment...",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
+            Line::from(vec![Span::styled(
+                "Parsing filesystem structures in sandboxed environment...",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Target Media: ", Style::default().fg(Color::DarkGray)),
@@ -979,7 +1048,7 @@ fn draw_browse_contents(f: &mut Frame, area: Rect, app: &mut App) {
             Line::from(""),
             Line::from(vec![
                 Span::styled(
-                    "❌ Inspection Error: ",
+                    "Inspection Error: ",
                     Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(err, Style::default().fg(Color::White)),
@@ -1014,76 +1083,86 @@ fn draw_browse_contents(f: &mut Frame, area: Rect, app: &mut App) {
         entries.len()
     );
 
-    let items: Vec<ListItem> = entries
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| {
-            let is_selected = idx == app.browse_selected_idx;
-            let marker = if is_selected { "▶ " } else { "  " };
+    let items: Vec<ListItem> = if entries.is_empty() {
+        vec![
+            ListItem::new(Line::from("")),
+            ListItem::new(Line::from(vec![Span::styled(
+                "  (Empty directory / no files found)",
+                Style::default().fg(Color::DarkGray),
+            )])),
+        ]
+    } else {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| {
+                let is_selected = idx == app.browse_selected_idx;
+                let marker = if is_selected { "▶ " } else { "  " };
 
-            let (icon, name_styled, size_str, style) = if entry.name == ".." {
-                (
-                    "📁 ",
-                    Span::styled(".. (Parent Directory)", Style::default().fg(Color::Yellow)),
-                    String::new(),
-                    if is_selected {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Yellow)
-                    },
-                )
-            } else if entry.is_dir {
-                (
-                    "📁 ",
+                let (icon, name_styled, size_str, style) = if entry.name == ".." {
+                    (
+                        "📁 ",
+                        Span::styled(".. (Parent Directory)", Style::default().fg(Color::Yellow)),
+                        String::new(),
+                        if is_selected {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Yellow)
+                        },
+                    )
+                } else if entry.is_dir {
+                    (
+                        "📁 ",
+                        Span::styled(
+                            format!("{}/", entry.name),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        "[DIR]".to_string(),
+                        if is_selected {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Yellow)
+                        },
+                    )
+                } else {
+                    (
+                        "   ",
+                        Span::styled(&entry.name, Style::default().fg(Color::White)),
+                        format_size(entry.size),
+                        if is_selected {
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        },
+                    )
+                };
+
+                let line = Line::from(vec![
+                    Span::raw(marker),
+                    Span::raw(icon),
+                    name_styled,
                     Span::styled(
-                        format!("{}/", entry.name),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
+                        if size_str.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  ({})", size_str)
+                        },
+                        Style::default().fg(Color::DarkGray),
                     ),
-                    "[DIR]".to_string(),
-                    if is_selected {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Yellow)
-                    },
-                )
-            } else {
-                (
-                    "📄 ",
-                    Span::styled(&entry.name, Style::default().fg(Color::White)),
-                    format_size(entry.size),
-                    if is_selected {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                )
-            };
+                ]);
 
-            let line = Line::from(vec![
-                Span::raw(marker),
-                Span::raw(icon),
-                name_styled,
-                Span::styled(
-                    if size_str.is_empty() {
-                        String::new()
-                    } else {
-                        format!("  ({})", size_str)
-                    },
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
-
-            ListItem::new(line).style(style)
-        })
-        .collect();
+                ListItem::new(line).style(style)
+            })
+            .collect()
+    };
 
     let list_block = Block::default().title(title).borders(Borders::ALL);
     let list = List::new(items).block(list_block);
@@ -1106,7 +1185,7 @@ fn draw_browse_contents(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let details_block = Block::default()
-        .title(" 🔍 Metadata Inspection (Sandboxed) ")
+        .title(" Metadata Inspection (Sandboxed) ")
         .borders(Borders::ALL);
 
     if let Some(entry) = entries.get(app.browse_selected_idx) {
@@ -1124,36 +1203,148 @@ fn draw_browse_contents(f: &mut Frame, area: Rect, app: &mut App) {
             None => "N/A".to_string(),
         };
 
-        let lines = vec![
+        let fs_str = match entry.fs_type {
+            Some(ref fs) => format!("{fs} (Partition #{})", entry.partition_index),
+            None => format!("Partition #{}", entry.partition_index),
+        };
+
+        let cluster_str = match entry.starting_cluster {
+            Some(cl) => format!("#{cl} (0x{cl:08X})"),
+            None => "N/A".to_string(),
+        };
+
+        let (allocated_str, slack_str) = if !entry.is_dir {
+            if let Some(cs) = entry.cluster_size {
+                if cs > 0 {
+                    let clusters = if entry.size == 0 {
+                        0
+                    } else {
+                        (entry.size.saturating_add(cs as u64 - 1)) / cs as u64
+                    };
+                    let allocated = clusters.saturating_mul(cs as u64);
+                    let slack = allocated.saturating_sub(entry.size);
+                    (
+                        format!(
+                            "{} bytes ({} cluster{})",
+                            allocated,
+                            clusters,
+                            if clusters == 1 { "" } else { "s" }
+                        ),
+                        format!("{} bytes (unallocated in cluster)", slack),
+                    )
+                } else {
+                    ("N/A".to_string(), "N/A".to_string())
+                }
+            } else {
+                ("N/A".to_string(), "N/A".to_string())
+            }
+        } else {
+            ("N/A (Directory)".to_string(), "N/A (Directory)".to_string())
+        };
+
+        let detected_type_str = entry.detected_type.as_deref().unwrap_or(if entry.is_dir {
+            "Directory"
+        } else {
+            "Unknown"
+        });
+
+        let mut lines = vec![
             Line::from(vec![
-                Span::styled("Name: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(&entry.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Name: ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    &entry.name,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Path: ", Style::default().fg(Color::Cyan)),
-                Span::styled(format!("/{}", entry.full_path), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("/{}", entry.full_path),
+                    Style::default().fg(Color::White),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Type: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
-                    if entry.is_dir { "Directory" } else { "Regular File" },
-                    Style::default().fg(if entry.is_dir { Color::Yellow } else { Color::Green }),
+                    if entry.is_dir {
+                        "Directory"
+                    } else {
+                        "Regular File"
+                    },
+                    Style::default().fg(if entry.is_dir {
+                        Color::Yellow
+                    } else {
+                        Color::Green
+                    }),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Extension: ", Style::default().fg(Color::Cyan)),
-                Span::styled(ext, Style::default().fg(Color::White)),
+                Span::styled("Filesystem: ", Style::default().fg(Color::Cyan)),
+                Span::styled(fs_str, Style::default().fg(Color::White)),
             ]),
             Line::from(vec![
-                Span::styled("Size: ", Style::default().fg(Color::Cyan)),
+                Span::styled("Extension: ", Style::default().fg(Color::Cyan)),
+                Span::styled(ext.clone(), Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("Content Type: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    detected_type_str,
+                    Style::default().fg(if detected_type_str.contains("Executable") {
+                        Color::LightRed
+                    } else {
+                        Color::White
+                    }),
+                ),
+            ]),
+        ];
+
+        let ext_lower = ext.to_lowercase();
+        if !entry.is_dir
+            && detected_type_str.contains("Executable")
+            && ext_lower != ".exe"
+            && ext_lower != ".bin"
+        {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Risk Warning: ",
+                    Style::default()
+                        .fg(Color::LightRed)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Executable file disguised with non-executable extension!",
+                    Style::default().fg(Color::LightRed),
+                ),
+            ]));
+        }
+
+        lines.extend(vec![
+            Line::from(vec![
+                Span::styled("File Size: ", Style::default().fg(Color::Cyan)),
                 Span::styled(
                     format!("{} bytes ({})", entry.size, format_size(entry.size)),
                     Style::default().fg(Color::White),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Partition: ", Style::default().fg(Color::Cyan)),
-                Span::styled(format!("Partition #{}", entry.partition_index), Style::default().fg(Color::White)),
+                Span::styled("Allocated Size: ", Style::default().fg(Color::Cyan)),
+                Span::styled(allocated_str, Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("Slack Space: ", Style::default().fg(Color::Cyan)),
+                Span::styled(slack_str, Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled("Starting Cluster: ", Style::default().fg(Color::Cyan)),
+                Span::styled(cluster_str, Style::default().fg(Color::White)),
             ]),
             Line::from(vec![
                 Span::styled("Data Offset: ", Style::default().fg(Color::Cyan)),
@@ -1161,7 +1352,35 @@ fn draw_browse_contents(f: &mut Frame, area: Rect, app: &mut App) {
             ]),
             Line::from(vec![
                 Span::styled("Attributes: ", Style::default().fg(Color::Cyan)),
-                Span::styled(format_attributes(entry.attributes), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!(
+                        "{} (0x{:02X})",
+                        format_attributes(entry.attributes),
+                        entry.attributes
+                    ),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Created (Birth): ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    entry.created.as_deref().unwrap_or("Not recorded"),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Modified (Write): ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    entry.modified.as_deref().unwrap_or("Not recorded"),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Accessed: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    entry.accessed.as_deref().unwrap_or("Not recorded"),
+                    Style::default().fg(Color::White),
+                ),
             ]),
             Line::from(""),
             Line::from(Span::styled(
@@ -1170,22 +1389,34 @@ fn draw_browse_contents(f: &mut Frame, area: Rect, app: &mut App) {
             )),
             Line::from(vec![
                 Span::styled(
-                    "🔒 Security Sandbox Active",
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    "Security Sandbox Active",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]),
-            Line::from(""),
-            Line::from("Direct file opening, rendering, and execution are strictly disabled to protect the host station from malicious payloads and hostile file parsers."),
+            Line::from(
+                "Direct file opening, rendering, and execution are strictly disabled to protect the host station from malicious payloads and hostile file parsers.",
+            ),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Press ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[s]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::styled(" to proceed with full multi-stage security vetting.", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "[s]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " to proceed with full multi-stage security vetting.",
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]),
-        ];
+        ]);
 
         let p_details = Paragraph::new(lines)
             .block(details_block)
+            .scroll((app.browse_detail_scroll, 0))
             .wrap(Wrap { trim: true });
         f.render_widget(p_details, chunks[1]);
     } else {

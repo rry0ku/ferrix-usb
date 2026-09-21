@@ -182,7 +182,7 @@ fn disable_gsettings_automount(
         for key in keys {
             let mut check_cmd = std::process::Command::new("sudo");
             check_cmd
-                .args(["-u", sudo_user, "--", "gsettings", "get", schema, key])
+                .args(["-n", "-u", sudo_user, "--", "gsettings", "get", schema, key])
                 .stderr(Stdio::null());
             if let Some(bus) = bus_addr {
                 check_cmd.env("DBUS_SESSION_BUS_ADDRESS", bus);
@@ -194,6 +194,7 @@ fn disable_gsettings_automount(
                     let mut set_cmd = std::process::Command::new("sudo");
                     set_cmd
                         .args([
+                            "-n",
                             "-u",
                             sudo_user,
                             "--",
@@ -234,6 +235,7 @@ fn disable_xfce_automount(
         let mut check_cmd = std::process::Command::new("sudo");
         check_cmd
             .args([
+                "-n",
                 "-u",
                 sudo_user,
                 "--",
@@ -254,6 +256,7 @@ fn disable_xfce_automount(
                 let mut set_cmd = std::process::Command::new("sudo");
                 set_cmd
                     .args([
+                        "-n",
                         "-u",
                         sudo_user,
                         "--",
@@ -547,6 +550,7 @@ impl StationProtectionGuard {
                             let mut set_cmd = std::process::Command::new("sudo");
                             set_cmd
                                 .args([
+                                    "-n",
                                     "-u",
                                     &sudo_user,
                                     "--",
@@ -570,6 +574,7 @@ impl StationProtectionGuard {
                             let mut set_cmd = std::process::Command::new("sudo");
                             set_cmd
                                 .args([
+                                    "-n",
                                     "-u",
                                     &sudo_user,
                                     "--",

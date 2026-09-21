@@ -1,5 +1,6 @@
 use crate::tui::app::{App, ScanMode, Screen};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::sync::atomic::Ordering;
 
 pub fn handle_key_event(app: &mut App, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -31,10 +32,12 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
             } else {
                 match key.code {
                     KeyCode::Char('q') => app.should_quit = true,
-                    KeyCode::Char('r') => app.refresh_devices(),
                     KeyCode::Char('m') => {
                         app.is_entering_manual_device = true;
                         app.manual_device_input.clear();
+                    }
+                    KeyCode::Char('r') => {
+                        app.refresh_devices();
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if app.selected_device_idx > 0 {
@@ -68,18 +71,15 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                     KeyCode::Char('u') => {
                         if let Some(dev) = app.selected_device() {
                             if dev.is_system_drive {
-                                app.status_message = Some(
-                                    "Cannot unmount: host system drive is protected.".to_string(),
-                                );
+                                app.set_status("Cannot unmount: host system drive is protected.");
                             } else {
                                 let path = dev.path.clone();
                                 match crate::device::auth::unmount_device_partitions(&path) {
                                     Ok(unmounted) => {
                                         if unmounted.is_empty() {
-                                            app.status_message =
-                                                Some("Device is not mounted.".to_string());
+                                            app.set_status("Device is not mounted.");
                                         } else {
-                                            app.status_message = Some(format!(
+                                            app.set_status(format!(
                                                 "Successfully unmounted: {}",
                                                 unmounted.join(", ")
                                             ));
@@ -87,8 +87,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                                         }
                                     }
                                     Err(e) => {
-                                        app.status_message =
-                                            Some(format!("Failed to unmount device: {e}"));
+                                        app.set_status(format!("Failed to unmount device: {e}"));
                                     }
                                 }
                             }
@@ -101,7 +100,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                         if let Some(dev) = app.selected_device() {
                             if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/")
                             {
-                                app.status_message = Some(format!(
+                                app.set_status(format!(
                                     "Cannot scan '{}': No media inserted (0 bytes). Insert media or select another device.",
                                     dev.name
                                 ));
@@ -126,39 +125,58 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
         Screen::BrowseContents => match key.code {
             KeyCode::Char('q') => app.should_quit = true,
             KeyCode::Esc => {
+                app.browse_cancel.store(true, Ordering::SeqCst);
+                app.browse_loading = false;
+                app.rx_browse = None;
                 app.screen = Screen::DeviceSelect;
             }
             KeyCode::Char('s') => {
                 app.screen = Screen::ModeSelect;
             }
+            KeyCode::Char('r') => {
+                app.browse_files.clear();
+                app.open_drive_browser();
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 if app.browse_selected_idx > 0 {
                     app.browse_selected_idx -= 1;
+                    app.browse_detail_scroll = 0;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let total = app.current_dir_entries().len();
                 if total > 0 && app.browse_selected_idx < total - 1 {
                     app.browse_selected_idx += 1;
+                    app.browse_detail_scroll = 0;
                 }
             }
             KeyCode::PageUp => {
                 app.browse_selected_idx = app.browse_selected_idx.saturating_sub(10);
+                app.browse_detail_scroll = 0;
             }
             KeyCode::PageDown => {
                 let total = app.current_dir_entries().len();
                 if total > 0 {
                     app.browse_selected_idx = (app.browse_selected_idx + 10).min(total - 1);
+                    app.browse_detail_scroll = 0;
                 }
             }
             KeyCode::Home => {
                 app.browse_selected_idx = 0;
+                app.browse_detail_scroll = 0;
             }
             KeyCode::End => {
                 let total = app.current_dir_entries().len();
                 if total > 0 {
                     app.browse_selected_idx = total - 1;
+                    app.browse_detail_scroll = 0;
                 }
+            }
+            KeyCode::Char('J') | KeyCode::Char(']') => {
+                app.browse_detail_scroll = app.browse_detail_scroll.saturating_add(1);
+            }
+            KeyCode::Char('K') | KeyCode::Char('[') => {
+                app.browse_detail_scroll = app.browse_detail_scroll.saturating_sub(1);
             }
             KeyCode::Backspace | KeyCode::Char('h') | KeyCode::Left => {
                 if !app.browse_current_dir.is_empty() {
@@ -168,18 +186,19 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                     };
                     app.browse_current_dir = parent;
                     app.browse_selected_idx = 0;
+                    app.browse_detail_scroll = 0;
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
                 let entries = app.current_dir_entries();
                 if let Some(entry) = entries.get(app.browse_selected_idx) {
                     if entry.is_dir {
                         app.browse_current_dir = entry.full_path.clone();
                         app.browse_selected_idx = 0;
+                        app.browse_detail_scroll = 0;
                     } else {
-                        app.status_message = Some(
-                            "File preview disabled for security. Metadata inspection only."
-                                .to_string(),
+                        app.set_status(
+                            "File preview disabled for security. Metadata inspection only.",
                         );
                     }
                 }

@@ -32,6 +32,50 @@ pub struct FatDirEntry {
     pub size: u64,
     pub cluster: u32,
     pub attributes: u8,
+    pub created: Option<String>,
+    pub modified: Option<String>,
+    pub accessed: Option<String>,
+}
+
+pub fn format_dos_datetime(date: u16, time: u16) -> Option<String> {
+    if date == 0 && time == 0 {
+        return None;
+    }
+    let year = 1980 + ((date >> 9) & 0x7F) as u32;
+    let month = ((date >> 5) & 0x0F) as u32;
+    let day = (date & 0x1F) as u32;
+
+    let hour = ((time >> 11) & 0x1F) as u32;
+    let minute = ((time >> 5) & 0x3F) as u32;
+    let second = ((time & 0x1F) * 2) as u32;
+
+    if (1..=12).contains(&month)
+        && (1..=31).contains(&day)
+        && hour <= 23
+        && minute <= 59
+        && second <= 59
+    {
+        Some(format!(
+            "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+        ))
+    } else {
+        None
+    }
+}
+
+pub fn format_dos_date(date: u16) -> Option<String> {
+    if date == 0 {
+        return None;
+    }
+    let year = 1980 + ((date >> 9) & 0x7F) as u32;
+    let month = ((date >> 5) & 0x0F) as u32;
+    let day = (date & 0x1F) as u32;
+
+    if (1..=12).contains(&month) && (1..=31).contains(&day) {
+        Some(format!("{year:04}-{month:02}-{day:02}"))
+    } else {
+        None
+    }
 }
 
 pub fn parse_fat_boot_sector(sector: &[u8]) -> Result<FatBootSector, StageError> {
@@ -264,12 +308,26 @@ pub fn parse_fat_directory(dir_data: &[u8]) -> Result<(Vec<FatDirEntry>, Vec<Str
         let cluster = (cluster_high << 16) | cluster_low;
         let size = u32::from_le_bytes([entry[28], entry[29], entry[30], entry[31]]) as u64;
 
+        let c_time = u16::from_le_bytes([entry[14], entry[15]]);
+        let c_date = u16::from_le_bytes([entry[16], entry[17]]);
+        let created = format_dos_datetime(c_date, c_time);
+
+        let a_date = u16::from_le_bytes([entry[18], entry[19]]);
+        let accessed = format_dos_date(a_date);
+
+        let m_time = u16::from_le_bytes([entry[22], entry[23]]);
+        let m_date = u16::from_le_bytes([entry[24], entry[25]]);
+        let modified = format_dos_datetime(m_date, m_time);
+
         entries.push(FatDirEntry {
             name: full_name,
             is_dir,
             size,
             cluster,
             attributes: attr,
+            created,
+            modified,
+            accessed,
         });
     }
 

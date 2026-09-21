@@ -122,6 +122,48 @@ pub struct ExfatEntry {
     pub cluster: u32,
     pub attributes: u16,
     pub no_fat_chain: bool,
+    pub created: Option<String>,
+    pub modified: Option<String>,
+    pub accessed: Option<String>,
+}
+
+pub fn format_exfat_datetime(date: u16, time: u16, utc_offset_byte: u8) -> Option<String> {
+    if date == 0 && time == 0 {
+        return None;
+    }
+    let year = 1980 + ((date >> 9) & 0x7F) as u32;
+    let month = ((date >> 5) & 0x0F) as u32;
+    let day = (date & 0x1F) as u32;
+
+    let hour = ((time >> 11) & 0x1F) as u32;
+    let minute = ((time >> 5) & 0x3F) as u32;
+    let second = ((time & 0x1F) * 2) as u32;
+
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+
+    let dt = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
+
+    if utc_offset_byte & 0x80 != 0 {
+        let offset_val = if (utc_offset_byte & 0x40) != 0 {
+            (utc_offset_byte | 0x80) as i8
+        } else {
+            (utc_offset_byte & 0x3F) as i8
+        };
+        let total_mins = offset_val as i32 * 15;
+        let tz_sign = if total_mins >= 0 { '+' } else { '-' };
+        let tz_hours = (total_mins.abs()) / 60;
+        let tz_mins = (total_mins.abs()) % 60;
+        Some(format!("{dt} UTC{tz_sign}{tz_hours:02}:{tz_mins:02}"))
+    } else {
+        Some(dt)
+    }
 }
 
 pub fn exfat_cluster_to_offset(
@@ -192,6 +234,21 @@ pub fn parse_exfat_directory(data: &[u8]) -> Vec<ExfatEntry> {
             let attributes = u16::from_le_bytes([data[i + 4], data[i + 5]]);
             let is_dir = (attributes & 0x10) != 0;
 
+            let c_time = u16::from_le_bytes([data[i + 8], data[i + 9]]);
+            let c_date = u16::from_le_bytes([data[i + 10], data[i + 11]]);
+            let c_utc = if i + 22 < data.len() { data[i + 22] } else { 0 };
+            let created = format_exfat_datetime(c_date, c_time, c_utc);
+
+            let m_time = u16::from_le_bytes([data[i + 12], data[i + 13]]);
+            let m_date = u16::from_le_bytes([data[i + 14], data[i + 15]]);
+            let m_utc = if i + 23 < data.len() { data[i + 23] } else { 0 };
+            let modified = format_exfat_datetime(m_date, m_time, m_utc);
+
+            let a_time = u16::from_le_bytes([data[i + 16], data[i + 17]]);
+            let a_date = u16::from_le_bytes([data[i + 18], data[i + 19]]);
+            let a_utc = if i + 24 < data.len() { data[i + 24] } else { 0 };
+            let accessed = format_exfat_datetime(a_date, a_time, a_utc);
+
             let mut stream_info: Option<(u64, u32, bool)> = None;
             let mut name_parts: Vec<u16> = Vec::new();
 
@@ -241,6 +298,9 @@ pub fn parse_exfat_directory(data: &[u8]) -> Vec<ExfatEntry> {
                         cluster,
                         attributes,
                         no_fat_chain,
+                        created,
+                        modified,
+                        accessed,
                     });
                 }
             }
