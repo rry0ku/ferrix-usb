@@ -43,3 +43,19 @@ pub fn enter_sandbox(
         seccomp_status,
     })
 }
+
+pub fn enter_sandbox_for_thread(
+    allowed_read_paths: &[&Path],
+    allowed_write_paths: &[&Path],
+) -> Result<SandboxInfo, SandboxError> {
+    let landlock_status = apply_landlock(allowed_read_paths, allowed_write_paths)?;
+    let seccomp_status = apply_seccomp()?;
+
+    Ok(SandboxInfo {
+        privilege_dropped: false,
+        uid: nix::unistd::getuid().as_raw(),
+        gid: nix::unistd::getgid().as_raw(),
+        landlock_status,
+        seccomp_status,
+    })
+}

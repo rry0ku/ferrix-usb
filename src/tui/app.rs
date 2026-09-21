@@ -12,10 +12,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum Screen {
     DeviceSelect,
     ModeSelect,
+    BrowseContents,
     Scanning,
     Results,
     Report,
     Triage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseEntry {
+    pub name: String,
+    pub full_path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub partition_index: u32,
+    pub attributes: u8,
+    pub data_offset: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +115,15 @@ pub struct App {
     pub last_device_refresh: std::time::Instant,
     pub should_quit: bool,
     pub sector_size: u32,
+    pub browse_files: Vec<crate::fs::DiscoveredFile>,
+    pub browse_current_dir: String,
+    pub browse_selected_idx: usize,
+    pub browse_list_state: ListState,
+    pub browse_loading: bool,
+    pub browse_error: Option<String>,
+    pub browse_target_name: String,
+    pub browse_target_path: PathBuf,
+    pub rx_browse: Option<Receiver<Result<Vec<crate::fs::DiscoveredFile>, String>>>,
 }
 
 impl Default for App {
@@ -147,6 +168,15 @@ impl Default for App {
             last_device_refresh: std::time::Instant::now(),
             should_quit: false,
             sector_size: 512,
+            browse_files: Vec::new(),
+            browse_current_dir: String::new(),
+            browse_selected_idx: 0,
+            browse_list_state: ListState::default(),
+            browse_loading: false,
+            browse_error: None,
+            browse_target_name: String::new(),
+            browse_target_path: PathBuf::new(),
+            rx_browse: None,
         };
         app.refresh_devices();
         app
@@ -639,7 +669,7 @@ impl App {
                     let scan_target = ctx.snapshot_path.as_ref().unwrap_or(&ctx.target_path);
                     let read_paths = [scan_target.as_path(), ctx.target_path.as_path()];
                     let write_paths: [&std::path::Path; 0] = [];
-                    let _ = crate::sandbox::enter_sandbox(&read_paths, &write_paths);
+                    let _ = crate::sandbox::enter_sandbox_for_thread(&read_paths, &write_paths);
 
                     let partition_stage =
                         crate::disk::PartitionScanStage::new(detected_sector_size);
@@ -778,6 +808,224 @@ impl App {
         });
     }
 
+    pub fn open_drive_browser(&mut self) {
+        let selected_dev = if let Some(dev) = self.selected_device() {
+            if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/") {
+                self.status_message = Some(format!(
+                    "Cannot inspect '{}': No media inserted (0 bytes).",
+                    dev.name
+                ));
+                return;
+            }
+            dev.clone()
+        } else if !self.manual_device_input.trim().is_empty() {
+            let p = PathBuf::from(self.manual_device_input.trim());
+            DeviceEntry {
+                path: p.clone(),
+                name: p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                size_bytes: 0,
+                vendor: String::new(),
+                model: String::new(),
+                serial: String::new(),
+                is_removable: true,
+                is_system_drive: false,
+                mount_points: Vec::new(),
+                sector_size: 512,
+            }
+        } else {
+            return;
+        };
+
+        let target_path = selected_dev.path.clone();
+        let sector_size = if selected_dev.sector_size == 0 {
+            crate::device::read_block_device_sector_size(&target_path).unwrap_or(512)
+        } else {
+            selected_dev.sector_size
+        };
+
+        self.browse_target_name = selected_dev.name.clone();
+        self.browse_target_path = target_path.clone();
+        self.browse_files.clear();
+        self.browse_current_dir.clear();
+        self.browse_selected_idx = 0;
+        self.browse_loading = true;
+        self.browse_error = None;
+        self.screen = Screen::BrowseContents;
+
+        let (tx, rx) = channel();
+        self.rx_browse = Some(rx);
+
+        thread::spawn(move || {
+            let res = (|| -> Result<Vec<crate::fs::DiscoveredFile>, String> {
+                let mut file = crate::disk::snapshot::open_device_or_file_with_retry(
+                    &target_path,
+                    std::time::Duration::from_secs(3),
+                )
+                .map_err(|e| {
+                    if !crate::device::StationProtectionGuard::is_root()
+                        && e.kind() == std::io::ErrorKind::PermissionDenied
+                    {
+                        format!(
+                            "Failed to open device '{}': Permission denied. Root privileges are required to inspect raw block devices (run with 'sudo ferrix').",
+                            target_path.display()
+                        )
+                    } else {
+                        format!("Failed to open device '{}': {e}", target_path.display())
+                    }
+                })?;
+
+                let total_bytes =
+                    crate::disk::snapshot::get_device_or_file_size(&file, &target_path);
+
+                let read_paths = [target_path.as_path()];
+                let write_paths: [&std::path::Path; 0] = [];
+                let _ = crate::sandbox::enter_sandbox_for_thread(&read_paths, &write_paths);
+
+                let files =
+                    crate::fs::extract_filesystem_files(&mut file, total_bytes, sector_size)
+                        .map_err(|e| format!("Filesystem extraction error: {e}"))?;
+
+                Ok(files)
+            })();
+
+            let _ = tx.send(res);
+        });
+    }
+
+    pub fn current_dir_entries(&self) -> Vec<BrowseEntry> {
+        let mut entries = Vec::new();
+        let mut seen_dirs = std::collections::HashSet::new();
+
+        let prefix = if self.browse_current_dir.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", self.browse_current_dir.trim_matches('/'))
+        };
+
+        if !self.browse_current_dir.is_empty() {
+            let parent = match self.browse_current_dir.rfind('/') {
+                Some(idx) => self.browse_current_dir[..idx].to_string(),
+                None => String::new(),
+            };
+            entries.push(BrowseEntry {
+                name: "..".to_string(),
+                full_path: parent,
+                is_dir: true,
+                size: 0,
+                partition_index: 0,
+                attributes: 0x10,
+                data_offset: None,
+            });
+        }
+
+        for file in &self.browse_files {
+            let path_str = String::from_utf8_lossy(file.path.as_bytes()).to_string();
+            let normalized = path_str.replace('\\', "/");
+            let trimmed = normalized.trim_start_matches('/');
+
+            if prefix.is_empty() {
+                if let Some(slash_idx) = trimmed.find('/') {
+                    let dir_name = &trimmed[..slash_idx];
+                    if seen_dirs.insert(dir_name.to_string()) {
+                        entries.push(BrowseEntry {
+                            name: dir_name.to_string(),
+                            full_path: dir_name.to_string(),
+                            is_dir: true,
+                            size: 0,
+                            partition_index: file.partition_index,
+                            attributes: 0x10,
+                            data_offset: None,
+                        });
+                    }
+                } else if file.is_dir {
+                    if seen_dirs.insert(trimmed.to_string()) {
+                        entries.push(BrowseEntry {
+                            name: trimmed.to_string(),
+                            full_path: trimmed.to_string(),
+                            is_dir: true,
+                            size: file.size,
+                            partition_index: file.partition_index,
+                            attributes: file.attributes,
+                            data_offset: file.data_offset,
+                        });
+                    }
+                } else {
+                    entries.push(BrowseEntry {
+                        name: trimmed.to_string(),
+                        full_path: trimmed.to_string(),
+                        is_dir: false,
+                        size: file.size,
+                        partition_index: file.partition_index,
+                        attributes: file.attributes,
+                        data_offset: file.data_offset,
+                    });
+                }
+            } else if trimmed.starts_with(&prefix) {
+                let rest = &trimmed[prefix.len()..];
+                if rest.is_empty() {
+                    continue;
+                }
+                if let Some(slash_idx) = rest.find('/') {
+                    let dir_name = &rest[..slash_idx];
+                    let full_dir = format!("{}{}", prefix, dir_name);
+                    if seen_dirs.insert(dir_name.to_string()) {
+                        entries.push(BrowseEntry {
+                            name: dir_name.to_string(),
+                            full_path: full_dir,
+                            is_dir: true,
+                            size: 0,
+                            partition_index: file.partition_index,
+                            attributes: 0x10,
+                            data_offset: None,
+                        });
+                    }
+                } else if file.is_dir {
+                    if seen_dirs.insert(rest.to_string()) {
+                        entries.push(BrowseEntry {
+                            name: rest.to_string(),
+                            full_path: format!("{}{}", prefix, rest),
+                            is_dir: true,
+                            size: file.size,
+                            partition_index: file.partition_index,
+                            attributes: file.attributes,
+                            data_offset: file.data_offset,
+                        });
+                    }
+                } else {
+                    entries.push(BrowseEntry {
+                        name: rest.to_string(),
+                        full_path: format!("{}{}", prefix, rest),
+                        is_dir: false,
+                        size: file.size,
+                        partition_index: file.partition_index,
+                        attributes: file.attributes,
+                        data_offset: file.data_offset,
+                    });
+                }
+            }
+        }
+
+        entries.sort_by(|a, b| {
+            if a.name == ".." {
+                return std::cmp::Ordering::Less;
+            }
+            if b.name == ".." {
+                return std::cmp::Ordering::Greater;
+            }
+            match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
+
+        entries
+    }
+
     pub fn poll_scan_events(&mut self) {
         if self.screen == Screen::DeviceSelect
             && !self.is_entering_manual_device
@@ -785,6 +1033,22 @@ impl App {
         {
             self.refresh_devices();
             self.last_device_refresh = std::time::Instant::now();
+        }
+
+        if let Some(ref rx) = self.rx_browse {
+            if let Ok(res) = rx.try_recv() {
+                self.browse_loading = false;
+                match res {
+                    Ok(files) => {
+                        self.browse_files = files;
+                        self.browse_error = None;
+                    }
+                    Err(e) => {
+                        self.browse_error = Some(e);
+                    }
+                }
+                self.rx_browse = None;
+            }
         }
 
         if let Some(ref rx) = self.rx_event {

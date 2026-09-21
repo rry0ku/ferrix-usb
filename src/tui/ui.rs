@@ -25,6 +25,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::DeviceSelect => draw_device_select(f, chunks[1], app),
         Screen::ModeSelect => draw_mode_select(f, chunks[1], app),
+        Screen::BrowseContents => draw_browse_contents(f, chunks[1], app),
         Screen::Scanning => draw_scanning(f, chunks[1], app),
         Screen::Results => draw_results(f, chunks[1], app),
         Screen::Report => draw_report(f, chunks[1], app),
@@ -62,10 +63,13 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             if app.is_entering_manual_device {
                 "[Enter] Confirm Path  [Esc] Cancel  [q] Quit"
             } else {
-                "[Enter] Select Device  [m] Manual Path  [u] Unmount Drive  [r] Refresh  [q] Quit"
+                "[Enter] Select  [v] Browse Files  [m] Manual Path  [u] Unmount Drive  [r] Refresh  [q] Quit"
             }
         }
-        Screen::ModeSelect => "[1] Ingress  [2] Egress  [Enter] Start Scan  [Esc] Back  [q] Quit",
+        Screen::ModeSelect => "[1] Ingress  [2] Egress  [v] Browse Files  [Enter] Start Scan  [Esc] Back  [q] Quit",
+        Screen::BrowseContents => {
+            "[↑/↓/j/k] Navigate  [Enter] Open Dir  [Backspace] Up  [s] Start Scan  [Esc] Back  [q] Quit"
+        }
         Screen::Scanning => "Scanning in progress... Please wait. [q] Cancel",
         Screen::Results => {
             "[↑/↓/j/k] Navigate  [i] Toggle Info  [t] Triage False Positive  [p] Export Report  [Esc] Device Select  [q] Quit"
@@ -892,4 +896,302 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn format_attributes(attr: u8) -> String {
+    let mut flags = Vec::new();
+    if attr & 0x01 != 0 {
+        flags.push("Read-Only");
+    }
+    if attr & 0x02 != 0 {
+        flags.push("Hidden");
+    }
+    if attr & 0x04 != 0 {
+        flags.push("System");
+    }
+    if attr & 0x10 != 0 {
+        flags.push("Directory");
+    }
+    if attr & 0x20 != 0 {
+        flags.push("Archive");
+    }
+    if flags.is_empty() {
+        "Normal".to_string()
+    } else {
+        flags.join(", ")
+    }
+}
+
+fn draw_browse_contents(f: &mut Frame, area: Rect, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    if app.browse_loading {
+        let block = Block::default()
+            .title(format!(" 📁 Inspecting Drive: {} ", app.browse_target_name))
+            .borders(Borders::ALL);
+        let text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("⏳ ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "Parsing filesystem structures in sandboxed environment...",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Target Media: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    app.browse_target_path.display().to_string(),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(""),
+            Line::from("Media is being inspected offline and read-only without kernel mounting."),
+        ];
+        let p = Paragraph::new(text).block(block);
+        f.render_widget(p, area);
+        return;
+    }
+
+    if let Some(ref err) = app.browse_error {
+        let block = Block::default()
+            .title(format!(" 📁 Drive Contents: {} ", app.browse_target_name))
+            .borders(Borders::ALL);
+        let text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "❌ Inspection Error: ",
+                    Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(err, Style::default().fg(Color::White)),
+            ]),
+            Line::from(""),
+            Line::from("Could not read filesystem structures. The device may be unpartitioned, encrypted, or using an unsupported filesystem format."),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "Press [s] to proceed with security scan anyway, or [Esc] to return to device selection.",
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+        ];
+        let p = Paragraph::new(text).block(block);
+        f.render_widget(p, area);
+        return;
+    }
+
+    let entries = app.current_dir_entries();
+
+    let path_display = if app.browse_current_dir.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", app.browse_current_dir)
+    };
+
+    let title = format!(
+        " 📁 {} [{}] ({} items) ",
+        app.browse_target_name,
+        path_display,
+        entries.len()
+    );
+
+    let items: Vec<ListItem> = entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let is_selected = idx == app.browse_selected_idx;
+            let marker = if is_selected { "▶ " } else { "  " };
+
+            let (icon, name_styled, size_str, style) = if entry.name == ".." {
+                (
+                    "📁 ",
+                    Span::styled(".. (Parent Directory)", Style::default().fg(Color::Yellow)),
+                    String::new(),
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    },
+                )
+            } else if entry.is_dir {
+                (
+                    "📁 ",
+                    Span::styled(
+                        format!("{}/", entry.name),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    "[DIR]".to_string(),
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    },
+                )
+            } else {
+                (
+                    "📄 ",
+                    Span::styled(&entry.name, Style::default().fg(Color::White)),
+                    format_size(entry.size),
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                )
+            };
+
+            let line = Line::from(vec![
+                Span::raw(marker),
+                Span::raw(icon),
+                name_styled,
+                Span::styled(
+                    if size_str.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  ({})", size_str)
+                    },
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    let list_block = Block::default().title(title).borders(Borders::ALL);
+    let list = List::new(items).block(list_block);
+
+    if entries.is_empty() {
+        app.browse_list_state.select(None);
+    } else {
+        let sel = app.browse_selected_idx.min(entries.len() - 1);
+        app.browse_list_state.select(Some(sel));
+    }
+    f.render_stateful_widget(list, chunks[0], &mut app.browse_list_state);
+
+    if !entries.is_empty() {
+        let mut scrollbar_state =
+            ScrollbarState::new(entries.len().saturating_sub(1)).position(app.browse_selected_idx);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+        f.render_stateful_widget(scrollbar, chunks[0], &mut scrollbar_state);
+    }
+
+    let details_block = Block::default()
+        .title(" 🔍 Metadata Inspection (Sandboxed) ")
+        .borders(Borders::ALL);
+
+    if let Some(entry) = entries.get(app.browse_selected_idx) {
+        let ext = if entry.is_dir {
+            "Directory".to_string()
+        } else {
+            std::path::Path::new(&entry.name)
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_else(|| "none".to_string())
+        };
+
+        let offset_str = match entry.data_offset {
+            Some(off) => format!("0x{:08X} (sector {})", off, off / 512),
+            None => "N/A".to_string(),
+        };
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("Name: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(&entry.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("Path: ", Style::default().fg(Color::Cyan)),
+                Span::styled(format!("/{}", entry.full_path), Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("Type: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    if entry.is_dir { "Directory" } else { "Regular File" },
+                    Style::default().fg(if entry.is_dir { Color::Yellow } else { Color::Green }),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Extension: ", Style::default().fg(Color::Cyan)),
+                Span::styled(ext, Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("Size: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("{} bytes ({})", entry.size, format_size(entry.size)),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Partition: ", Style::default().fg(Color::Cyan)),
+                Span::styled(format!("Partition #{}", entry.partition_index), Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("Data Offset: ", Style::default().fg(Color::Cyan)),
+                Span::styled(offset_str, Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled("Attributes: ", Style::default().fg(Color::Cyan)),
+                Span::styled(format_attributes(entry.attributes), Style::default().fg(Color::White)),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "────────────────────────────────────────",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(vec![
+                Span::styled(
+                    "🔒 Security Sandbox Active",
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from("Direct file opening, rendering, and execution are strictly disabled to protect the host station from malicious payloads and hostile file parsers."),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[s]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(" to proceed with full multi-stage security vetting.", Style::default().fg(Color::DarkGray)),
+            ]),
+        ];
+
+        let p_details = Paragraph::new(lines)
+            .block(details_block)
+            .wrap(Wrap { trim: true });
+        f.render_widget(p_details, chunks[1]);
+    } else {
+        let p_empty = Paragraph::new("Select an item to inspect metadata.")
+            .block(details_block)
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(p_empty, chunks[1]);
+    }
 }

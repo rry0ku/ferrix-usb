@@ -408,14 +408,14 @@ impl StationProtectionGuard {
         let mut masked_services = Vec::new();
         for svc in ["udisks2", "autofs"] {
             let is_active = std::process::Command::new("systemctl")
-                .args(["is-active", "--quiet", svc])
+                .args(["--no-ask-password", "is-active", "--quiet", svc])
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
 
             if is_active {
                 let mask_res = std::process::Command::new("systemctl")
-                    .args(["mask", "--runtime", svc])
+                    .args(["--no-ask-password", "mask", "--runtime", svc])
                     .stderr(Stdio::null())
                     .status();
                 if let Ok(m) = mask_res {
@@ -425,7 +425,7 @@ impl StationProtectionGuard {
                 }
 
                 if let Ok(status) = std::process::Command::new("systemctl")
-                    .args(["stop", svc])
+                    .args(["--no-ask-password", "stop", svc])
                     .stderr(Stdio::null())
                     .status()
                 {
@@ -463,6 +463,9 @@ impl StationProtectionGuard {
     }
 
     pub fn restore(&mut self) {
+        if !Self::is_root() {
+            return;
+        }
         for (path, val) in &self.saved_authorized_defaults {
             let restore_val = if val == "0" { "1" } else { val };
             let _ = fs::write(path, format!("{restore_val}\n"));
@@ -493,25 +496,25 @@ impl StationProtectionGuard {
 
         for svc in self.masked_services.drain(..) {
             let _ = std::process::Command::new("systemctl")
-                .args(["unmask", "--runtime", &svc])
+                .args(["--no-ask-password", "unmask", "--runtime", &svc])
                 .stderr(Stdio::null())
                 .status();
         }
 
         for svc in self.stopped_services.drain(..) {
             let _ = std::process::Command::new("systemctl")
-                .args(["start", &svc])
+                .args(["--no-ask-password", "start", &svc])
                 .stderr(Stdio::null())
                 .status();
         }
 
         for svc in ["udisks2", "autofs"] {
             let _ = std::process::Command::new("systemctl")
-                .args(["unmask", "--runtime", svc])
+                .args(["--no-ask-password", "unmask", "--runtime", svc])
                 .stderr(Stdio::null())
                 .status();
             let _ = std::process::Command::new("systemctl")
-                .args(["start", svc])
+                .args(["--no-ask-password", "start", svc])
                 .stderr(Stdio::null())
                 .status();
         }
@@ -634,6 +637,9 @@ pub fn find_block_device_for_usb_sysfs(sysfs_path: &Path) -> Option<PathBuf> {
 }
 
 pub fn cleanup_lingering_station_lockdown() {
+    if !StationProtectionGuard::is_root() {
+        return;
+    }
     let udev_rule_file = Path::new("/run/udev/rules.d/99-ferrix-no-automount.rules");
     if udev_rule_file.exists() {
         let _ = fs::remove_file(udev_rule_file);
@@ -667,11 +673,11 @@ pub fn cleanup_lingering_station_lockdown() {
 
     for svc in ["udisks2", "autofs"] {
         let _ = std::process::Command::new("systemctl")
-            .args(["unmask", "--runtime", svc])
+            .args(["--no-ask-password", "unmask", "--runtime", svc])
             .stderr(Stdio::null())
             .status();
         let _ = std::process::Command::new("systemctl")
-            .args(["start", svc])
+            .args(["--no-ask-password", "start", svc])
             .stderr(Stdio::null())
             .status();
     }

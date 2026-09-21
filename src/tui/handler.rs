@@ -94,6 +94,9 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
                             }
                         }
                     }
+                    KeyCode::Char('v') | KeyCode::Char('b') => {
+                        app.open_drive_browser();
+                    }
                     KeyCode::Enter if !app.devices.is_empty() => {
                         if let Some(dev) = app.selected_device() {
                             if dev.size_bytes == 0 && !dev.path.starts_with("/sys/bus/usb/devices/")
@@ -114,9 +117,73 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) {
         Screen::ModeSelect => match key.code {
             KeyCode::Char('q') => app.should_quit = true,
             KeyCode::Esc => app.screen = Screen::DeviceSelect,
+            KeyCode::Char('v') | KeyCode::Char('b') => app.open_drive_browser(),
             KeyCode::Char('1') => app.mode = ScanMode::Ingress,
             KeyCode::Char('2') => app.mode = ScanMode::Egress,
             KeyCode::Enter => app.start_scan(),
+            _ => {}
+        },
+        Screen::BrowseContents => match key.code {
+            KeyCode::Char('q') => app.should_quit = true,
+            KeyCode::Esc => {
+                app.screen = Screen::DeviceSelect;
+            }
+            KeyCode::Char('s') => {
+                app.screen = Screen::ModeSelect;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if app.browse_selected_idx > 0 {
+                    app.browse_selected_idx -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let total = app.current_dir_entries().len();
+                if total > 0 && app.browse_selected_idx < total - 1 {
+                    app.browse_selected_idx += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                app.browse_selected_idx = app.browse_selected_idx.saturating_sub(10);
+            }
+            KeyCode::PageDown => {
+                let total = app.current_dir_entries().len();
+                if total > 0 {
+                    app.browse_selected_idx = (app.browse_selected_idx + 10).min(total - 1);
+                }
+            }
+            KeyCode::Home => {
+                app.browse_selected_idx = 0;
+            }
+            KeyCode::End => {
+                let total = app.current_dir_entries().len();
+                if total > 0 {
+                    app.browse_selected_idx = total - 1;
+                }
+            }
+            KeyCode::Backspace | KeyCode::Char('h') | KeyCode::Left => {
+                if !app.browse_current_dir.is_empty() {
+                    let parent = match app.browse_current_dir.rfind('/') {
+                        Some(idx) => app.browse_current_dir[..idx].to_string(),
+                        None => String::new(),
+                    };
+                    app.browse_current_dir = parent;
+                    app.browse_selected_idx = 0;
+                }
+            }
+            KeyCode::Enter => {
+                let entries = app.current_dir_entries();
+                if let Some(entry) = entries.get(app.browse_selected_idx) {
+                    if entry.is_dir {
+                        app.browse_current_dir = entry.full_path.clone();
+                        app.browse_selected_idx = 0;
+                    } else {
+                        app.status_message = Some(
+                            "File preview disabled for security. Metadata inspection only."
+                                .to_string(),
+                        );
+                    }
+                }
+            }
             _ => {}
         },
         Screen::Scanning => {
