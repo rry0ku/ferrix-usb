@@ -17,9 +17,11 @@
 
 [Key Features](#key-features) •
 [Operating Model](#operating-model) •
+[Security Architecture](#security-architecture--what-users-must-know) •
 [Inspection Pipeline](#inspection-pipeline) •
-[Universal Protection](#universal-automount-protection) •
+[Automount Defense](#universal-automount-defense) •
 [Installation & Usage](#installation--usage) •
+[Policy Configuration](#policy-configuration) •
 [Threat Model](#threat-model-summary)
 
 </div>
@@ -43,14 +45,15 @@ Traditional endpoint security relies on antivirus software that scans files insi
 
 ## Key Features
 
-- **Zero-Mount Inspection:** Pure userspace read-only parsers for FAT12/16/32, exFAT, NTFS, and ext2/3/4 without ever invoking the OS `mount` syscall or kernel filesystem drivers.
-- **Snapshot-First Security:** Reads the physical device sequentially once into a read-only image on the station, computing a full-device BLAKE3 hash. All scans and release operations execute on the snapshot, eliminating Time-of-Check to Time-of-Use (TOCTOU) exploits.
-- **BadUSB Detection:** Inspects USB descriptors and interface classes directly from sysfs before authorizing devices. Instantly flags composite devices (Mass Storage + HID keyboard/mouse).
-- **Universal Automount Defense:** Enforces a 4-layer defense across the Linux kernel, ephemeral udev rules, runtime systemd masking, and desktop environment configurations (GNOME, KDE, XFCE, Cinnamon, MATE, LXQt, LXDE).
-- **Release Hygiene Engine:** On `PASS`, verified files can be safely extracted to a staging folder with POSIX permission normalization (`0644`/`0755`) and sanitization of bidi overrides (RTLO), control characters, leading dashes, and Windows reserved names.
-- **Landlock & Seccomp Hardening:** Drops root privileges immediately after opening device handles and enters an unprivileged sandbox with zero network access and restricted syscalls.
-- **Two-Station Cryptographic Custody:** Generates Ed25519-signed manifests with BLAKE3 full-device and file hashes, replay nonces, and station signatures to verify media integrity on the receiving side.
-- **Egress Sanitization & Wipe Verification:** Detects deleted file remnants in unallocated space, verifies forensic wipes (zeroed or random blocks via Shannon entropy), and flags metadata.
+- **Zero-Mount Inspection:** Pure userspace read-only parsers for FAT12/16/32 and exFAT without ever invoking the OS `mount` syscall or kernel filesystem drivers. Unsupported filesystems (such as NTFS or ext4) fail closed (`FX-FS-005`, `QUARANTINE`) because ferrix refuses to mount untrusted partitions.
+- **Snapshot-First TOCTOU Defense:** Reads the physical device sequentially once into a read-only snapshot image on the station, streaming a full-device BLAKE3 hash. All scans and release operations execute against the snapshot, neutralizing dual-personality flash memory attacks.
+- **BadUSB & Descriptor Vetting:** Inspects USB descriptors and interface classes directly from sysfs before authorizing devices. Instantly flags composite devices (Mass Storage + HID keyboard/mouse or network adapter).
+- **Universal Automount Defense:** Enforces a multi-layer defense across the Linux kernel USB core, ephemeral udev rules, runtime systemd masking (`udisks2`/`autofs`), and desktop environment configurations (GNOME, KDE, XFCE, Cinnamon, MATE, LXQt, LXDE).
+- **Release Hygiene Engine:** On `PASS`, verified files can be safely extracted to a staging folder with POSIX permission normalization (`0644`/`0755`), extended attribute stripping, `O_NOFOLLOW` symlink refusal, and sanitization of bidi overrides (RTLO), control characters, leading dashes, and Windows reserved names.
+- **Privilege Drop & Sandboxing:** Drops root privileges immediately after opening device handles and enters an unprivileged sandbox utilizing **Landlock** and **seccomp** with zero network access and restricted syscalls.
+- **Two-Station Cryptographic Custody:** Generates Ed25519-signed manifests with full-device BLAKE3 hashes, per-file hashes, replay nonces, and station signatures to verify media integrity on the receiving side.
+- **Egress Sanitization & Wipe Verification:** Detects deleted file remnants in unallocated space, verifies forensic wipes (zeroed or random blocks via Shannon entropy), and flags document metadata.
+- **Accurate, Low-Noise Heuristics:** Standard media formats (MP3, FLAC, WAV, OGG, MP4, MKV, AVI, etc.) pass by default unless containing embedded executables. Disguised scripts and binaries are strictly escalated to `High` severity (`FX-FILE-001`), forcing quarantine.
 
 ---
 
@@ -75,13 +78,59 @@ Traditional endpoint security relies on antivirus software that scans files insi
 
 ---
 
+## Security Architecture & What Users Must Know
+
+For high-assurance deployments, operators and administrators must observe the following security principles:
+
+### 1. Dedicated Offline Checking Station Requirement
+- **Never run `ferrix` on a secure production workstation or network.** `ferrix-usb` is designed for a dedicated, standalone, air-gapped checking station running an immutable live Linux environment (e.g. read-only root on RAM).
+- All network interfaces (Ethernet, Wi-Fi, Bluetooth) must be physically removed or disabled at the firmware/kernel level.
+- `ferrix-usb` has **zero network dependencies** and makes no network calls.
+
+### 2. Physical & Hardware Limits (Sacrificial Stations)
+- **Host Controller Vulnerabilities:** When a USB device is plugged in, the kernel USB host controller (xHCI/eHCI) performs low-level hardware enumeration before userspace can inspect descriptors. A hostile USB microcontroller designed to exploit kernel USB core drivers could compromise the kernel during insertion.
+- **Mitigation:** Use a **sacrificial checking station**, physical USB data blockers, or optical USB isolators between untrusted media and the station.
+- **Electrical Surge (USB Killer):** High-voltage discharge devices will permanently damage physical hardware. Use replaceable surge-protected ports and physically inspect connectors.
+
+### 3. Privilege Dropping & Sandboxing
+- Elevated privileges (`sudo`) are used **strictly** to query sysfs descriptors and open raw block devices.
+- Immediately after acquiring necessary file descriptors, `ferrix` drops root privileges and enters a strict sandbox combining:
+  - **Landlock:** Restricts filesystem access strictly to the snapshot image and release staging directories.
+  - **Seccomp:** Enforces an allowlist of essential syscalls, blocking socket creation, networking, kernel module loading, and process execution.
+- **Fail-Closed:** If sandbox initialization fails while running as root, `ferrix` aborts execution immediately.
+
+### 4. Snapshot-First Anti-TOCTOU Guarantee
+- All scans, file carving, and release operations execute against an immutable, read-only snapshot image file on the checking station.
+- The physical device is read sequentially **exactly once** while computing a streaming BLAKE3 hash.
+- The live media is never read again during analysis or release. This eliminates Time-of-Check to Time-of-Use (TOCTOU) exploits where malicious flash firmware serves clean data to the scanner and malicious payloads to the user.
+
+### 5. Fail-Closed Security Policy
+- `ferrix-usb` enforces a **default-deny, fail-closed** model:
+  - Any unparseable, ambiguous, or corrupted partition table or filesystem fails closed to `QUARANTINE` or `FAIL`.
+  - Unsupported filesystems (NTFS, ext4, etc.) trigger `FX-FS-005` at `High` severity (`QUARANTINE`) because pure userspace inspection without mounting is required.
+  - Skipped, crashed, or disabled scan stages immediately prevent a `PASS` verdict.
+
+### 6. Two-Station Cryptographic Custody & Anti-Replay
+- **Station Keys:** The Ed25519 private key (`station.key`) must remain exclusively on the checking station with `0400` permissions.
+- **Public Key Resolution:** The public key (`station.pub`) is distributed to receiving machines. `ferrix` searches strictly in `/etc/ferrix/station.pub` or an explicit `--pubkey` argument, refusing untrusted working directory keys.
+- **Anti-Replay Nonces:** Each manifest includes a unique 128-bit cryptographic nonce and station timestamp. The receiving side records accepted nonces to prevent manifest replay attacks.
+
+### 7. Release Hygiene
+- Released files are extracted exclusively from the verified snapshot image.
+- Permissions are normalized to `0644` (files) and `0755` (directories).
+- Setuid/setgid bits, capabilities, POSIX ACLs, and extended attributes are stripped.
+- Symlinks, hardlinks, FIFOs, and device nodes are refused (`O_NOFOLLOW`).
+- Path traversal (`../`) and hostile filenames (RTLO bidi overrides, control characters, Windows reserved names) are sanitized or blocked.
+
+---
+
 ## Inspection Pipeline
 
 | Layer | Finding Prefix | Checks Performed | Target Threats |
 |---|---|---|---|
 | **Device Layer** | `FX-DEV-` | USB descriptors, composite interfaces (Mass Storage + HID), vendor/product allowlist | BadUSB, Rubber Ducky, unauthorized hardware |
 | **Partition Layer** | `FX-PART-` | MBR/GPT validation, protective MBR mismatch, overlapping partitions, unallocated gaps | Partition table attacks, hidden partitions, steganography |
-| **Filesystem Layer** | `FX-FS-` | FAT/exFAT/NTFS/ext boot records, polyglot filesystems, cluster allocation, duplicate entries | Polyglot disks, filesystem driver exploits, structure tampering |
+| **Filesystem Layer** | `FX-FS-` | FAT12/16/32 and exFAT boot records, cluster maps, polyglot signatures, unsupported FS fail-closed | Polyglot disks, filesystem driver exploits, structure tampering |
 | **File Layer** | `FX-FILE-` | Content magic vs extension mismatch, autorun triggers, RTLO bidi overrides, zip bombs/traversal, Office macros, PDF JavaScript | Disguised executables, macro malware, archive traversal, autorun exploits |
 | **Egress Layer** | `FX-EGR-` | Deleted remnants in unallocated space, Shannon entropy wipe verification, document metadata | Data leakage, incomplete media wipes, sensitive author metadata |
 
@@ -147,10 +196,13 @@ sudo ferrix scan /dev/sdb --release --out /mnt/staging
 sudo ferrix egress /dev/sdb --verify-wipe --strip-metadata
 
 # Two-station custody verification against an Ed25519-signed manifest
-sudo ferrix verify /dev/sdb --manifest ./manifest.json --pubkey station.pub
+sudo ferrix verify /dev/sdb --manifest ./manifest.json --pubkey /etc/ferrix/station.pub
 
 # Generate station Ed25519 signing keypair
 ferrix keygen --key-dir /etc/ferrix
+
+# Clean up all station snapshots, ephemeral workspaces, and temporary data
+sudo ferrix clean
 
 # Export JSON or HTML report from a previous scan
 ferrix report manifest.json --html --out /var/reports/scan.html
@@ -169,7 +221,7 @@ sudo ferrix watch --auto-scan
 | Code | Verdict | Meaning |
 |---|---|---|
 | `0` | **PASS** | Media passed all checks and policy rules |
-| `10` | **QUARANTINE** | Suspicious findings, non-critical anomalies, or stage warnings detected |
+| `10` | **QUARANTINE** | Suspicious findings, unsupported filesystems, or stage warnings detected |
 | `20` | **FAIL** | Critical threats, BadUSB composite device, or structural violations detected |
 | `1` | **ERROR** | Internal error, missing arguments, or permission denied |
 
@@ -192,6 +244,11 @@ allowed_types:
   - png
   - jpg
   - docx
+  - mp3
+  - flac
+  - wav
+  - mp4
+  - mkv
 archives:
   max_depth: 3
   max_expansion_ratio: 100
@@ -214,11 +271,13 @@ on_critical: fail
 - Executables disguised as documents, double extensions, and Unicode RTLO bidi overrides.
 - Archive directory traversal attacks and decompression bombs.
 - Residual confidential data in unallocated blocks and slack space.
+- TOCTOU read attacks via sequential single-pass snapshotting and streaming BLAKE3 hashing.
 
 ### Honest Limits:
 - **Host Controller Attacks:** Hostile devices targeting kernel USB host controller drivers during physical enumeration cannot be prevented in software. Use a dedicated, sacrificial checking station and hardware data blockers where appropriate.
 - **Firmware Implants:** Implants embedded inside the drive controller microcontroller firmware are invisible to software inspection.
 - **Antivirus Scanners:** `ferrix-usb` detects risky structural patterns and file anomalies, but is not a signature-based antivirus engine.
+- **Physical Surge Destruction:** High-voltage surge devices ("USB Killers") require physical surge protection and optoisolated hubs.
 
 Full threat model details are in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
